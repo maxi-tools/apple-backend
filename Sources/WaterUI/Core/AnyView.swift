@@ -236,15 +236,6 @@ private func registerBuiltinComponentsIfNeeded() {
     registerMetadataComponent(WuiRetain.self)
     registerMetadataComponent(WuiContextMenu.self)
 
-    // Filter components
-    registerMetadataComponent(WuiBlur.self)
-    registerMetadataComponent(WuiBrightness.self)
-    registerMetadataComponent(WuiSaturation.self)
-    registerMetadataComponent(WuiContrast.self)
-    registerMetadataComponent(WuiHueRotation.self)
-    registerMetadataComponent(WuiGrayscale.self)
-    registerMetadataComponent(WuiOpacity.self)
-
     // Material background (blur effect)
     registerMetadataComponent(WuiMaterialBackground.self)
 
@@ -264,6 +255,8 @@ private func registerBuiltinComponentsIfNeeded() {
 
     // GPU components
     registerComponent(WuiGpuSurface.self)
+    registerComponent(WuiViewEffect.self)
+    registerMetadataComponent(WuiAppliedFilter.self)
 
     // WebView component
     registerComponent(WuiWebViewComponent.self)
@@ -519,6 +512,15 @@ private func registerBuiltinComponentsIfNeeded() {
             {
                 lastAutoLayoutWidth = bounds.width
                 invalidateIntrinsicContentSize()
+            }
+
+            // Update window's minimum content size based on current layout
+            // Use zero proposal to ask for minimum required size
+            if let window = window {
+                let minSize = sizeThatFits(WuiProposalSize(width: 0, height: 0))
+                if minSize.width > 0 && minSize.height > 0 {
+                    window.contentMinSize = minSize
+                }
             }
         }
 
