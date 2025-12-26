@@ -161,6 +161,7 @@ final class WindowManagerImpl {
         // Set up window delegate to track state changes and update binding on native close
         let delegate = WindowDelegate(
             stateBinding: stateBindingPtr,
+            contentView: contentView,
             onClose: { [weak self] closedWindow in
                 self?.removeWindow(closedWindow)
             }
@@ -182,6 +183,13 @@ final class WindowManagerImpl {
         contentView.frame = containerView.bounds
         contentView.autoresizingMask = [.width, .height]
         contentView.needsLayout = true
+
+        // Set minimum window size based on content's minimum size
+        // This prevents the window from being resized smaller than its content can handle
+        let minSize = contentView.sizeThatFits(WuiProposalSize(width: 0, height: 0))
+        if minSize.width > 0 && minSize.height > 0 {
+            window.contentMinSize = minSize
+        }
 
         // Wait for all GpuSurfaces to be ready before showing window
         // This prevents flicker from surfaces appearing one-by-one
@@ -256,12 +264,17 @@ private class WindowDelegate: NSObject, NSWindowDelegate {
     /// The state binding to update when the native close button is clicked
     let stateBinding: OpaquePointer?
     let onClose: (NSWindow) -> Void
+    /// Reference to the content view for dynamic min size updates
+    weak var contentView: WuiAnyView?
 
-    init(stateBinding: OpaquePointer?, onClose: @escaping (NSWindow) -> Void) {
+    init(stateBinding: OpaquePointer?, contentView: WuiAnyView?, onClose: @escaping (NSWindow) -> Void) {
         self.stateBinding = stateBinding
+        self.contentView = contentView
         self.onClose = onClose
         super.init()
     }
+
+ 
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
