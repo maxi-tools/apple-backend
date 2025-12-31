@@ -183,6 +183,9 @@ final class WindowManagerImpl {
         contentView.frame = containerView.bounds
         contentView.autoresizingMask = [.width, .height]
         contentView.needsLayout = true
+        containerView.needsLayout = true
+        containerView.layoutSubtreeIfNeeded()
+        contentView.layoutSubtreeIfNeeded()
 
         // Set minimum window size based on content's minimum size
         // This prevents the window from being resized smaller than its content can handle
