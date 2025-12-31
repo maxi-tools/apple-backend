@@ -9,6 +9,7 @@
 // Uses callback-based async setup - no blocking on main thread.
 
 import CWaterUI
+import Foundation
 import Metal
 import OSLog
 import QuartzCore
@@ -40,6 +41,10 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
     private var renderInFlight = false
     private var width: UInt32 = 0
     private var height: UInt32 = 0
+    private var preRender: ((OpaquePointer, UInt32, UInt32) -> Void)?
+    private var captureRenderer: CARenderer?
+    private var captureQueue: MTLCommandQueue?
+    private var captureQueueDevice: MTLDevice?
 
     private let lock = NSLock()
     private let renderQueue = DispatchQueue(
@@ -127,7 +132,7 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         }
     }
 
-    func requestRender() {
+    func requestRender(preRender: ((OpaquePointer, UInt32, UInt32) -> Void)? = nil) {
         lock.lock()
         if !isActive || !isSetup {
             lock.unlock()
@@ -142,10 +147,15 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         renderInFlight = true
         let width = self.width
         let height = self.height
+        let storedPreRender = self.preRender
         lock.unlock()
 
         renderQueue.async { [weak self] in
             guard let self else { return }
+            let renderHook = preRender ?? storedPreRender
+            if let renderHook {
+                renderHook(state, width, height)
+            }
             _ = waterui_applied_filter_render(state, width, height)
             self.lock.lock()
             self.renderInFlight = false
@@ -170,6 +180,71 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         isInitializing = false
         isSetup = true
         lock.unlock()
+    }
+
+    func setPreRender(_ hook: ((OpaquePointer, UInt32, UInt32) -> Void)?) {
+        lock.lock()
+        preRender = hook
+        lock.unlock()
+    }
+
+    func renderNativeLayer(
+        _ layer: CALayer,
+        targetTexture: MTLTexture,
+        width: UInt32,
+        height: UInt32
+    ) -> Bool {
+        guard width > 0, height > 0 else { return false }
+
+        let device = targetTexture.device
+        let queue: MTLCommandQueue?
+        lock.lock()
+        if captureQueue == nil || captureQueueDevice !== device {
+            captureQueueDevice = device
+            captureQueue = device.makeCommandQueue()
+            captureRenderer = nil
+        }
+        queue = captureQueue
+        lock.unlock()
+
+        let renderer: CARenderer
+        let colorSpace: CGColorSpace? = {
+            switch targetTexture.pixelFormat {
+            case .rgba16Float:
+                return CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
+            default:
+                return CGColorSpace(name: CGColorSpace.sRGB)
+            }
+        }()
+
+        if let existing = captureRenderer {
+            renderer = existing
+            renderer.setDestination(targetTexture)
+        } else {
+            var options: [String: Any] = [
+                kCARendererColorSpace as String: colorSpace as Any,
+            ]
+            if let queue {
+                options[kCARendererMetalCommandQueue as String] = queue
+            }
+            renderer = CARenderer(mtlTexture: targetTexture, options: options)
+            captureRenderer = renderer
+        }
+
+        renderer.layer = layer
+        renderer.bounds = CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height))
+        let now = CACurrentMediaTime()
+        renderer.beginFrame(atTime: now, timeStamp: nil)
+        renderer.addUpdate(renderer.bounds)
+        renderer.render()
+        renderer.endFrame()
+        if let queue, let commandBuffer = queue.makeCommandBuffer() {
+            // Block until the CARenderer work completes so wgpu samples updated pixels.
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+        }
+
+        return true
     }
 }
 
@@ -206,12 +281,24 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
 
     /// Output metal layer for filtered content
     private var outputLayer: CAMetalLayer!
-
     /// Whether GPU resources are initialized
     private var isGpuInitialized = false
 
     /// Content scale factor
     private var currentScaleFactor: CGFloat = 1.0
+    private var captureTexture: MTLTexture?
+    private var captureSize: CGSize = .zero
+    private var capturePixelFormat: MTLPixelFormat = .invalid
+    private var captureCommandQueue: MTLCommandQueue?
+    private var activeGpuSurfaces: [ObjectIdentifier: WuiGpuSurface] = [:]
+    private var overlayTexture: MTLTexture?
+    private var overlaySize: CGSize = .zero
+    private var compositePipeline: MTLRenderPipelineState?
+    private var compositePipelineFormat: MTLPixelFormat = .invalid
+    private var compositeSampler: MTLSamplerState?
+    private var gpuSurfaceTextures: [ObjectIdentifier: MTLTexture] = [:]
+    private var gpuSurfaceTextureSizes: [ObjectIdentifier: CGSize] = [:]
+    private var gpuSurfaceHasContent: Set<ObjectIdentifier> = []
 
     /// Display link for render sync
     #if canImport(UIKit)
@@ -263,6 +350,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         outputLayer.maximumDrawableCount = 3
         outputLayer.isOpaque = false
         outputLayer.backgroundColor = CGColor.clear
+        outputLayer.zPosition = 1
         outputLayer.pixelFormat = .rgba16Float
         outputLayer.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
         outputLayer.wantsExtendedDynamicRangeContent = true
@@ -280,10 +368,605 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
 
     private func setupContentView() {
         contentView.translatesAutoresizingMaskIntoConstraints = true
-        // Content view is rendered off-screen for capture
-        // We don't add it as a subview - the filter handles display
+        // Keep content in the view tree for layout/capture; output layer overlays it.
         addSubview(contentView)
         contentView.isHidden = true
+        outputLayer.removeFromSuperlayer()
+        #if canImport(UIKit)
+            layer.addSublayer(outputLayer)
+        #elseif canImport(AppKit)
+            if self.layer == nil {
+                self.layer = CALayer()
+            }
+            self.layer?.addSublayer(outputLayer)
+        #endif
+
+        setupCapturePipeline()
+    }
+
+    private func setupCapturePipeline() {
+        renderState.setPreRender { [weak self] state, width, height in
+            guard let self else { return }
+            var captureTexture: MTLTexture?
+            var overlayTexture: MTLTexture?
+            var snapshots: [GpuSurfaceSnapshot] = []
+            var device: MTLDevice?
+
+            let mainBlock = {
+                self.withVisibleContentForCapture {
+                    self.prepareCaptureView(self.contentView)
+                    guard let outputDevice = self.outputLayer.device else { return }
+                    device = outputDevice
+                    guard let texture = self.ensureCaptureTexture(
+                        device: outputDevice,
+                        width: width,
+                        height: height
+                    ) else {
+                        return
+                    }
+                    captureTexture = texture
+
+                    snapshots = self.collectGpuSurfaceSnapshots()
+                    self.updateExternalGpuSurfaces(snapshots)
+                    if snapshots.isEmpty {
+                        self.clearTexture(texture, device: outputDevice)
+                        guard let layer = self.resolveCaptureLayer(from: self.contentView) else { return }
+                        _ = self.renderState.renderNativeLayer(
+                            layer,
+                            targetTexture: texture,
+                            width: width,
+                            height: height
+                        )
+                    } else {
+                        guard let overlay = self.ensureOverlayTexture(
+                            device: outputDevice,
+                            width: width,
+                            height: height
+                        ) else {
+                            return
+                        }
+                        overlayTexture = overlay
+                        self.clearTexture(overlay, device: outputDevice)
+                        self.withHiddenGpuSurfaces {
+                            guard let layer = self.resolveCaptureLayer(from: self.contentView) else { return }
+                            _ = self.renderState.renderNativeLayer(
+                                layer,
+                                targetTexture: overlay,
+                                width: width,
+                                height: height
+                            )
+                        }
+                    }
+                }
+            }
+
+            if Thread.isMainThread {
+                mainBlock()
+            } else {
+                DispatchQueue.main.sync(execute: mainBlock)
+            }
+
+            guard let device, let captureTexture else { return }
+
+            if !snapshots.isEmpty {
+                self.renderGpuSurfaces(
+                    snapshots,
+                    into: captureTexture,
+                    overlayTexture: overlayTexture,
+                    device: device
+                )
+            }
+
+            let texturePtr = Unmanaged.passUnretained(captureTexture).toOpaque()
+            let ok = waterui_applied_filter_set_input(
+                state,
+                WuiInputType_MetalTexture,
+                texturePtr,
+                width,
+                height
+            )
+            if !ok {
+                Logger.waterui.error("[AppliedFilter] Failed to set input texture")
+            }
+        }
+    }
+
+    private func withVisibleContentForCapture(_ work: () -> Void) {
+        #if canImport(UIKit)
+            let wasHidden = contentView.isHidden
+            let oldAlpha = contentView.alpha
+            contentView.isHidden = false
+            contentView.alpha = 1.0
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            work()
+            CATransaction.commit()
+            contentView.alpha = oldAlpha
+            contentView.isHidden = wasHidden
+        #elseif canImport(AppKit)
+            let wasHidden = contentView.isHidden
+            let oldAlpha = contentView.alphaValue
+            contentView.isHidden = false
+            contentView.alphaValue = 1.0
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            work()
+            CATransaction.commit()
+            contentView.alphaValue = oldAlpha
+            contentView.isHidden = wasHidden
+        #endif
+    }
+
+    private func prepareCaptureView(_ view: PlatformView) {
+        #if canImport(AppKit)
+            ensureLayerBacked(view)
+            view.needsLayout = true
+            view.layoutSubtreeIfNeeded()
+            view.needsDisplay = true
+            view.displayIfNeeded()
+            updateLayerTree(view, scale: currentScaleFactor)
+        #elseif canImport(UIKit)
+            view.setNeedsLayout()
+            view.layoutIfNeeded()
+        #endif
+    }
+
+    #if canImport(AppKit)
+    private func updateLayerTree(_ view: PlatformView, scale: CGFloat) {
+        if let layer = view.layer {
+            layer.contentsScale = scale
+            layer.setNeedsLayout()
+            layer.layoutIfNeeded()
+            layer.setNeedsDisplay()
+            layer.displayIfNeeded()
+        }
+
+        for subview in view.subviews {
+            if let platformView = subview as? PlatformView {
+                updateLayerTree(platformView, scale: scale)
+            }
+        }
+    }
+
+    private func ensureLayerBacked(_ view: PlatformView) {
+        if view.layer == nil {
+            view.wantsLayer = true
+        }
+        for subview in view.subviews {
+            if let platformView = subview as? PlatformView {
+                ensureLayerBacked(platformView)
+            }
+        }
+    }
+    #endif
+
+    private func resolveCaptureLayer(from view: PlatformView) -> CALayer? {
+        guard let component = view as? WuiComponent else {
+            return view.layer
+        }
+
+        if isMetadataComponent(component) {
+            if let contentSubview = view.subviews.first(where: { $0 is WuiComponent }) as? PlatformView {
+                return resolveCaptureLayer(from: contentSubview)
+            }
+        }
+
+        #if canImport(AppKit)
+            if view.layer == nil {
+                view.wantsLayer = true
+            }
+        #endif
+
+        #if canImport(UIKit)
+            return view.layer
+        #elseif canImport(AppKit)
+            return view.layer
+        #endif
+    }
+
+    private struct GpuSurfaceSnapshot {
+        let surface: WuiGpuSurface
+        let origin: MTLOrigin
+        let size: MTLSize
+    }
+
+    private func collectGpuSurfaceSnapshots() -> [GpuSurfaceSnapshot] {
+        var snapshots: [GpuSurfaceSnapshot] = []
+        collectGpuSurfaceSnapshots(from: contentView, into: &snapshots)
+        return snapshots
+    }
+
+    private func updateExternalGpuSurfaces(_ snapshots: [GpuSurfaceSnapshot]) {
+        var next: [ObjectIdentifier: WuiGpuSurface] = [:]
+        next.reserveCapacity(snapshots.count)
+        for snapshot in snapshots {
+            let id = ObjectIdentifier(snapshot.surface)
+            next[id] = snapshot.surface
+        }
+
+        for (id, surface) in activeGpuSurfaces where next[id] == nil {
+            surface.endExternalRendering()
+        }
+        for (id, surface) in next where activeGpuSurfaces[id] == nil {
+            surface.beginExternalRendering()
+        }
+
+        activeGpuSurfaces = next
+    }
+
+    private func collectGpuSurfaceSnapshots(from view: PlatformView, into snapshots: inout [GpuSurfaceSnapshot]) {
+        if let surface = view as? WuiGpuSurface {
+            let rect = surface.convert(surface.bounds, to: contentView)
+            let scale = currentScaleFactor
+            let originX = Int((rect.origin.x * scale).rounded(.down))
+            let originY = Int((rect.origin.y * scale).rounded(.down))
+            let width = Int((rect.size.width * scale).rounded(.up))
+            let height = Int((rect.size.height * scale).rounded(.up))
+            let captureWidth = Int(captureSize.width)
+            let captureHeight = Int(captureSize.height)
+
+            let clampedOriginX = max(0, originX)
+            let clampedOriginY = max(0, originY)
+            let maxWidth = min(width, captureWidth - clampedOriginX)
+            let maxHeight = min(height, captureHeight - clampedOriginY)
+
+            if maxWidth > 0, maxHeight > 0 {
+                snapshots.append(GpuSurfaceSnapshot(
+                    surface: surface,
+                    origin: MTLOrigin(x: clampedOriginX, y: clampedOriginY, z: 0),
+                    size: MTLSize(width: maxWidth, height: maxHeight, depth: 1)
+                ))
+            }
+            return
+        }
+
+        for subview in view.subviews {
+            if let platformView = subview as? PlatformView, platformView is WuiComponent {
+                collectGpuSurfaceSnapshots(from: platformView, into: &snapshots)
+            }
+        }
+    }
+
+    private func withHiddenGpuSurfaces(_ work: () -> Void) {
+        var surfaces: [WuiGpuSurface] = []
+        collectGpuSurfaces(in: contentView, into: &surfaces)
+        if surfaces.isEmpty {
+            work()
+            return
+        }
+
+        let hiddenStates = surfaces.map(\.isHidden)
+        for surface in surfaces {
+            surface.isHidden = true
+        }
+        work()
+        for (surface, wasHidden) in zip(surfaces, hiddenStates) {
+            surface.isHidden = wasHidden
+        }
+    }
+
+    private func collectGpuSurfaces(in view: PlatformView, into surfaces: inout [WuiGpuSurface]) {
+        if let surface = view as? WuiGpuSurface {
+            surfaces.append(surface)
+            return
+        }
+
+        for subview in view.subviews {
+            if let platformView = subview as? PlatformView, platformView is WuiComponent {
+                collectGpuSurfaces(in: platformView, into: &surfaces)
+            }
+        }
+    }
+
+    private func ensureCaptureTexture(
+        device: MTLDevice,
+        width: UInt32,
+        height: UInt32
+    ) -> MTLTexture? {
+        let pixelFormat = MTLPixelFormat.bgra8Unorm
+        if let texture = captureTexture,
+           captureSize.width == CGFloat(width),
+           captureSize.height == CGFloat(height),
+           capturePixelFormat == pixelFormat
+        {
+            return texture
+        }
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: pixelFormat,
+            width: Int(width),
+            height: Int(height),
+            mipmapped: false
+        )
+        descriptor.usage = [.shaderRead, .renderTarget]
+        descriptor.storageMode = .shared
+
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            Logger.waterui.error("[AppliedFilter] Failed to create capture texture")
+            return nil
+        }
+
+        captureTexture = texture
+        captureSize = CGSize(width: Int(width), height: Int(height))
+        capturePixelFormat = pixelFormat
+        return texture
+    }
+
+    private func ensureOverlayTexture(
+        device: MTLDevice,
+        width: UInt32,
+        height: UInt32
+    ) -> MTLTexture? {
+        let pixelFormat = capturePixelFormat == .invalid ? .bgra8Unorm : capturePixelFormat
+        if let texture = overlayTexture,
+           overlaySize.width == CGFloat(width),
+           overlaySize.height == CGFloat(height),
+           texture.pixelFormat == pixelFormat
+        {
+            return texture
+        }
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: pixelFormat,
+            width: Int(width),
+            height: Int(height),
+            mipmapped: false
+        )
+        descriptor.usage = [.shaderRead, .renderTarget]
+        descriptor.storageMode = .shared
+
+        let texture = device.makeTexture(descriptor: descriptor)
+        overlayTexture = texture
+        overlaySize = CGSize(width: Int(width), height: Int(height))
+        return texture
+    }
+
+    private func ensureSurfaceTexture(
+        for surface: WuiGpuSurface,
+        device: MTLDevice,
+        width: UInt32,
+        height: UInt32
+    ) -> MTLTexture? {
+        let key = ObjectIdentifier(surface)
+        let size = CGSize(width: Int(width), height: Int(height))
+        if let texture = gpuSurfaceTextures[key],
+           gpuSurfaceTextureSizes[key] == size
+        {
+            return texture
+        }
+
+        let pixelFormat = capturePixelFormat == .invalid ? .bgra8Unorm : capturePixelFormat
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: pixelFormat,
+            width: Int(width),
+            height: Int(height),
+            mipmapped: false
+        )
+        descriptor.usage = [.shaderRead, .renderTarget]
+        descriptor.storageMode = .shared
+        let texture = device.makeTexture(descriptor: descriptor)
+        gpuSurfaceTextures[key] = texture
+        gpuSurfaceTextureSizes[key] = size
+        gpuSurfaceHasContent.remove(key)
+        return texture
+    }
+
+    private func ensureCommandQueue(device: MTLDevice) -> MTLCommandQueue? {
+        if let queue = captureCommandQueue, queue.device === device {
+            return queue
+        }
+        let queue = device.makeCommandQueue()
+        captureCommandQueue = queue
+        return queue
+    }
+
+    private func clearTexture(_ texture: MTLTexture, device: MTLDevice) {
+        guard let queue = ensureCommandQueue(device: device) else { return }
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = texture
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+
+        guard let commandBuffer = queue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
+        else {
+            return
+        }
+
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+    }
+
+    private func renderGpuSurfaces(
+        _ snapshots: [GpuSurfaceSnapshot],
+        into captureTexture: MTLTexture,
+        overlayTexture: MTLTexture?,
+        device: MTLDevice
+    ) {
+        var rendered: [(snapshot: GpuSurfaceSnapshot, texture: MTLTexture)] = []
+        rendered.reserveCapacity(snapshots.count)
+
+        for snapshot in snapshots {
+            let width = UInt32(snapshot.size.width)
+            let height = UInt32(snapshot.size.height)
+            guard let surfaceTexture = ensureSurfaceTexture(
+                for: snapshot.surface,
+                device: device,
+                width: width,
+                height: height
+            ) else { continue }
+
+            let renderedOk = snapshot.surface.renderToMetalTexture(
+                texture: surfaceTexture,
+                width: width,
+                height: height
+            )
+            if renderedOk {
+                gpuSurfaceHasContent.insert(ObjectIdentifier(snapshot.surface))
+                rendered.append((snapshot, surfaceTexture))
+            } else if gpuSurfaceHasContent.contains(ObjectIdentifier(snapshot.surface)) {
+                rendered.append((snapshot, surfaceTexture))
+            }
+        }
+
+        guard let queue = ensureCommandQueue(device: device),
+              let commandBuffer = queue.makeCommandBuffer()
+        else {
+            return
+        }
+
+        encodeClear(captureTexture, commandBuffer: commandBuffer)
+
+        if let blit = commandBuffer.makeBlitCommandEncoder() {
+            for entry in rendered {
+                blit.copy(
+                    from: entry.texture,
+                    sourceSlice: 0,
+                    sourceLevel: 0,
+                    sourceOrigin: .init(x: 0, y: 0, z: 0),
+                    sourceSize: entry.snapshot.size,
+                    to: captureTexture,
+                    destinationSlice: 0,
+                    destinationLevel: 0,
+                    destinationOrigin: entry.snapshot.origin
+                )
+            }
+            blit.endEncoding()
+        }
+
+        if let overlayTexture {
+            encodeCompositeOverlay(
+                overlayTexture,
+                onto: captureTexture,
+                commandBuffer: commandBuffer,
+                device: device
+            )
+        }
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+    }
+
+    private func encodeClear(_ texture: MTLTexture, commandBuffer: MTLCommandBuffer) {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = texture
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+
+        if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) {
+            encoder.endEncoding()
+        }
+    }
+
+    private func encodeCompositeOverlay(
+        _ overlayTexture: MTLTexture,
+        onto captureTexture: MTLTexture,
+        commandBuffer: MTLCommandBuffer,
+        device: MTLDevice
+    ) {
+        guard let pipeline = ensureCompositePipeline(device: device, format: captureTexture.pixelFormat),
+              let sampler = ensureCompositeSampler(device: device)
+        else {
+            return
+        }
+
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = captureTexture
+        descriptor.colorAttachments[0].loadAction = .load
+        descriptor.colorAttachments[0].storeAction = .store
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            return
+        }
+
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentTexture(overlayTexture, index: 0)
+        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+    }
+
+    private func ensureCompositePipeline(
+        device: MTLDevice,
+        format: MTLPixelFormat
+    ) -> MTLRenderPipelineState? {
+        if let pipeline = compositePipeline, compositePipelineFormat == format {
+            return pipeline
+        }
+
+        let source = """
+        #include <metal_stdlib>
+        using namespace metal;
+
+        struct VertexOut {
+            float4 position [[position]];
+            float2 uv;
+        };
+
+        vertex VertexOut vertex_main(uint vertexID [[vertex_id]]) {
+            float2 pos[3] = { {-1.0, -1.0}, {3.0, -1.0}, {-1.0, 3.0} };
+            float2 uv[3] = { {0.0, 0.0}, {2.0, 0.0}, {0.0, 2.0} };
+            VertexOut out;
+            out.position = float4(pos[vertexID], 0.0, 1.0);
+            out.uv = uv[vertexID];
+            return out;
+        }
+
+        fragment float4 fragment_main(
+            VertexOut in [[stage_in]],
+            texture2d<float> overlayTexture [[texture(0)]],
+            sampler overlaySampler [[sampler(0)]]
+        ) {
+            return overlayTexture.sample(overlaySampler, in.uv);
+        }
+        """
+
+        do {
+            let library = try device.makeLibrary(source: source, options: nil)
+            guard let vertex = library.makeFunction(name: "vertex_main"),
+                  let fragment = library.makeFunction(name: "fragment_main")
+            else {
+                return nil
+            }
+
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = vertex
+            descriptor.fragmentFunction = fragment
+            descriptor.colorAttachments[0].pixelFormat = format
+            descriptor.colorAttachments[0].isBlendingEnabled = true
+            descriptor.colorAttachments[0].rgbBlendOperation = .add
+            descriptor.colorAttachments[0].alphaBlendOperation = .add
+            descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
+            descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+
+            let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+            compositePipeline = pipeline
+            compositePipelineFormat = format
+            return pipeline
+        } catch {
+            Logger.waterui.error("[AppliedFilter] Failed to create composite pipeline")
+            return nil
+        }
+    }
+
+    private func ensureCompositeSampler(device: MTLDevice) -> MTLSamplerState? {
+        if let sampler = compositeSampler {
+            return sampler
+        }
+
+        let descriptor = MTLSamplerDescriptor()
+        descriptor.minFilter = .linear
+        descriptor.magFilter = .linear
+        descriptor.sAddressMode = .clampToEdge
+        descriptor.tAddressMode = .clampToEdge
+        let sampler = device.makeSamplerState(descriptor: descriptor)
+        compositeSampler = sampler
+        return sampler
     }
 
     // MARK: - GPU Initialization
@@ -418,6 +1101,8 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         override func layoutSubviews() {
             super.layoutSubviews()
             contentView.frame = bounds
+            contentView.setNeedsLayout()
+            contentView.layoutIfNeeded()
             updateOutputLayerFrame()
             initializeGpuIfNeeded()
         }
@@ -441,6 +1126,8 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         override func layout() {
             super.layout()
             contentView.frame = bounds
+            contentView.needsLayout = true
+            contentView.layoutSubtreeIfNeeded()
             updateOutputLayerFrame()
             initializeGpuIfNeeded()
         }
@@ -485,6 +1172,10 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
     // MARK: - Cleanup
 
     @MainActor deinit {
+        for (_, surface) in activeGpuSurfaces {
+            surface.endExternalRendering()
+        }
+        activeGpuSurfaces.removeAll()
         stopDisplayLink()
         renderState.shutdown()
     }
