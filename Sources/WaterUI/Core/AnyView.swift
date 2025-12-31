@@ -46,6 +46,12 @@ private func registerMetadataComponent<T: WuiComponent>(_ type: T.Type) {
     metadataComponentIds.insert(type.viewId)
 }
 
+/// Check if a component is a metadata component (wrapper that modifies env/appearance).
+@MainActor
+func isMetadataComponent(_ component: any WuiComponent) -> Bool {
+    metadataComponentIds.contains(type(of: component).viewId)
+}
+
 // MARK: - Root Theme Controller
 
 #if canImport(UIKit)
@@ -374,7 +380,13 @@ private func registerBuiltinComponentsIfNeeded() {
         /// Wait for all GpuSurfaces in the view tree to complete setup and first render.
         /// Call this before showing the window to prevent flicker.
         public nonisolated func ready() async {
-            let surfaces = await MainActor.run { collectGpuSurfaces() }
+            let surfaces = await MainActor.run {
+                let surfaces = collectGpuSurfaces()
+                for surface in surfaces {
+                    surface.prepareForReady()
+                }
+                return surfaces
+            }
             guard !surfaces.isEmpty else { return }
 
             await withTaskGroup(of: Void.self) { group in
@@ -550,7 +562,13 @@ private func registerBuiltinComponentsIfNeeded() {
         /// Wait for all GpuSurfaces in the view tree to complete setup and first render.
         /// Call this before showing the window to prevent flicker.
         public nonisolated func ready() async {
-            let surfaces = await MainActor.run { collectGpuSurfaces() }
+            let surfaces = await MainActor.run {
+                let surfaces = collectGpuSurfaces()
+                for surface in surfaces {
+                    surface.prepareForReady()
+                }
+                return surfaces
+            }
             guard !surfaces.isEmpty else { return }
 
             await withTaskGroup(of: Void.self) { group in

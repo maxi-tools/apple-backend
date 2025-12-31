@@ -1023,6 +1023,16 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         return renderState.renderToMetalTexture(texturePtr: texturePtr, width: width, height: height)
     }
 
+    func prepareForReady() {
+        #if canImport(UIKit)
+            setNeedsLayout()
+            layoutIfNeeded()
+        #elseif canImport(AppKit)
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+        #endif
+    }
+
     // MARK: - Async Ready
 
     /// Wait for GPU setup and first frame to complete.
