@@ -828,7 +828,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         }
 
         metalLayer.device = device
-        metalLayer.framebufferOnly = true
+        metalLayer.framebufferOnly = false  // Allow texture readback for preview capture
         metalLayer.maximumDrawableCount = 3  // Triple buffering for smooth 120fps
         metalLayer.isOpaque = false  // Allow transparency for compositing with background
         metalLayer.backgroundColor = CGColor.clear  // Ensure no black background
