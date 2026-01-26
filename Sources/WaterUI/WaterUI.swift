@@ -745,6 +745,7 @@ public final class WuiRootContext {
             installMediaPickerManager(env: initEnvPtr)
             installWebViewController(env: initEnvPtr)
             installWindowManager(env: initEnvPtr)
+            installViewRenderer(env: initEnvPtr)
             isFirstInit = true
         }
 

@@ -15,6 +15,8 @@ final class WuiAnyViews {
         self.inner = inner
     }
 
+    var ptr: OpaquePointer { inner }
+
     @MainActor deinit {
         waterui_drop_anyviews(inner)
     }
@@ -62,4 +64,32 @@ func makeAnyViewsWatcher(
         fatalError("Failed to create AnyViews watcher")
     }
     return watcher
+}
+
+/// Watches a `WuiAnyViews` collection for structural changes.
+///
+/// Callback receives the full ordered list of view IDs whenever the collection updates.
+@MainActor
+func watchAnyViewsIds(
+    _ anyViews: WuiAnyViews,
+    _ f: @escaping ([Int32], WuiWatcherMetadata) -> Void
+) -> WatcherGuard {
+    let data = wrap { (ids: CWaterUI.WuiArray_WuiId, metadata: WuiWatcherMetadata) in
+        let array = WuiArray<CWaterUI.WuiId>(ids).toArray()
+        f(array.map(\.inner), metadata)
+    }
+
+    let call: @convention(c) (UnsafeMutableRawPointer?, CWaterUI.WuiArray_WuiId, OpaquePointer?) -> Void =
+        { data, value, metadata in
+            callWrapper(data, value, metadata)
+        }
+
+    let drop: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
+        dropWrapper($0, CWaterUI.WuiArray_WuiId.self)
+    }
+
+    guard let guardPtr = waterui_anyviews_watch(anyViews.ptr, data, call, drop) else {
+        fatalError("Failed to watch anyviews")
+    }
+    return WatcherGuard(guardPtr)
 }

@@ -26,20 +26,20 @@ final class WuiTabs: PlatformView, WuiComponent {
     // Tab data
     private var tabs: [(id: UInt64, label: WuiAnyView, contentPtr: OpaquePointer?)] = []
     private var currentTabIndex: Int = 0
-    private var currentContentView: WuiAnyView?
+    private var currentContentView: PlatformView?
 
     // Selection binding
     private var selectionBinding: WuiBinding<WuiId>?
     private var selectionWatcher: WatcherGuard?
 
     #if canImport(UIKit)
-    private let tabBar: UITabBar = UITabBar()
+    private let tabBarContainer: UIView = UIView()
     private let contentContainer: UIView = UIView()
-    private let tabBarHeight: CGFloat = 49.0
+    private var tabButtons: [WuiTabButton] = []
     #elseif canImport(AppKit)
-    private let tabBar: NSSegmentedControl = NSSegmentedControl()
+    private let tabBarContainer: NSView = NSView()
     private let contentContainer: NSView = NSView()
-    private let tabBarHeight: CGFloat = 28.0
+    private var tabButtons: [WuiTabButton] = []
     #endif
 
     // MARK: - WuiComponent Init
@@ -67,9 +67,9 @@ final class WuiTabs: PlatformView, WuiComponent {
         configureTabBar()
         configureContentContainer()
 
-        // Show initial tab
+        // Show initial tab (use binding if provided)
         if !tabs.isEmpty {
-            showTab(at: 0)
+            showTab(at: currentTabIndex)
         }
     }
 
@@ -100,17 +100,17 @@ final class WuiTabs: PlatformView, WuiComponent {
         let binding = WuiBinding<WuiId>(bindingPtr)
         self.selectionBinding = binding
 
-        // Find initial tab index - WuiId.inner is Int32, tab.id is UInt64
-        let selectedIdValue = UInt64(binding.value.inner)
-        if let index = tabs.firstIndex(where: { $0.id == selectedIdValue }) {
+        // WuiTab.id is u64, encoded from i32 via `as u64` (may sign-extend in Rust).
+        // Compare using the low 32 bits to preserve the original i32 bit pattern.
+        let selectedInner = binding.value.inner
+        if let index = tabs.firstIndex(where: { tabIdToInner($0.id) == selectedInner }) {
             currentTabIndex = index
         }
 
         // Watch for selection changes
         selectionWatcher = binding.watch { [weak self] newId, _ in
             guard let self = self else { return }
-            let newIdValue = UInt64(newId.inner)
-            if let index = self.tabs.firstIndex(where: { $0.id == newIdValue }) {
+            if let index = self.tabs.firstIndex(where: { tabIdToInner($0.id) == newId.inner }) {
                 self.showTab(at: index)
             }
         }
@@ -120,33 +120,29 @@ final class WuiTabs: PlatformView, WuiComponent {
 
     private func configureTabBar() {
         #if canImport(UIKit)
-        tabBar.translatesAutoresizingMaskIntoConstraints = true
-        tabBar.delegate = self
-        tabBar.items = tabs.enumerated().map { index, tab in
-            let item = UITabBarItem(title: "Tab \(index + 1)", image: nil, tag: index)
-            return item
+        tabBarContainer.translatesAutoresizingMaskIntoConstraints = true
+        addSubview(tabBarContainer)
+
+        tabButtons = tabs.enumerated().map { index, tab in
+            let button = WuiTabButton(labelView: tab.label)
+            button.onTap = { [weak self] in
+                self?.showTab(at: index)
+            }
+            tabBarContainer.addSubview(button)
+            return button
         }
-        if !tabs.isEmpty {
-            tabBar.selectedItem = tabBar.items?.first
-        }
-        addSubview(tabBar)
         #elseif canImport(AppKit)
-        tabBar.translatesAutoresizingMaskIntoConstraints = true
-        tabBar.segmentCount = tabs.count
-        tabBar.segmentStyle = .automatic
-        tabBar.trackingMode = .selectOne
+        tabBarContainer.translatesAutoresizingMaskIntoConstraints = true
+        addSubview(tabBarContainer)
 
-        for (index, _) in tabs.enumerated() {
-            tabBar.setLabel("Tab \(index + 1)", forSegment: index)
+        tabButtons = tabs.enumerated().map { index, tab in
+            let button = WuiTabButton(labelView: tab.label)
+            button.onClick = { [weak self] in
+                self?.showTab(at: index)
+            }
+            tabBarContainer.addSubview(button)
+            return button
         }
-
-        if !tabs.isEmpty {
-            tabBar.selectedSegment = 0
-        }
-
-        tabBar.target = self
-        tabBar.action = #selector(tabChanged(_:))
-        addSubview(tabBar)
         #endif
     }
 
@@ -170,27 +166,19 @@ final class WuiTabs: PlatformView, WuiComponent {
         if let contentPtr = tab.contentPtr {
             // Call waterui_tab_content to build the NavigationView
             let navView = waterui_tab_content(contentPtr)
-            let contentView = WuiAnyView(anyview: navView.content, env: env)
+            let contentView = WuiNavigationView(ffiNav: navView, env: env)
             currentContentView = contentView
             contentView.translatesAutoresizingMaskIntoConstraints = true
             contentContainer.addSubview(contentView)
         }
 
         // Update selection binding (avoid infinite loop)
-        // Convert UInt64 tab.id back to Int32 for WuiId comparison
-        let tabIdAsInt32 = Int32(tab.id)
-        if selectionBinding?.value.inner != tabIdAsInt32 {
-            selectionBinding?.set(WuiId(inner: tabIdAsInt32))
+        let inner = tabIdToInner(tab.id)
+        if selectionBinding?.value.inner != inner {
+            selectionBinding?.set(WuiId(inner: inner))
         }
 
-        // Update native tab bar selection
-        #if canImport(UIKit)
-        if let items = tabBar.items, index < items.count {
-            tabBar.selectedItem = items[index]
-        }
-        #elseif canImport(AppKit)
-        tabBar.selectedSegment = index
-        #endif
+        updateSelectionUI()
 
         #if canImport(UIKit)
         setNeedsLayout()
@@ -200,11 +188,11 @@ final class WuiTabs: PlatformView, WuiComponent {
         #endif
     }
 
-    #if canImport(AppKit)
-    @objc private func tabChanged(_ sender: NSSegmentedControl) {
-        showTab(at: sender.selectedSegment)
+    private func updateSelectionUI() {
+        for (idx, button) in tabButtons.enumerated() {
+            button.isSelected = idx == currentTabIndex
+        }
     }
-    #endif
 
     // MARK: - WuiComponent
 
@@ -230,37 +218,64 @@ final class WuiTabs: PlatformView, WuiComponent {
 
     private func performLayout() {
         let isTop = position == WuiTabPosition_Top
+        let barHeight = measuredTabBarHeight()
 
         if isTop {
             // Tab bar at top
-            tabBar.frame = CGRect(x: 0, y: 0, width: bounds.width, height: tabBarHeight)
+            tabBarContainer.frame = CGRect(x: 0, y: 0, width: bounds.width, height: barHeight)
             contentContainer.frame = CGRect(
                 x: 0,
-                y: tabBarHeight,
+                y: barHeight,
                 width: bounds.width,
-                height: bounds.height - tabBarHeight
+                height: bounds.height - barHeight
             )
         } else {
             // Tab bar at bottom
-            let tabBarY = bounds.height - tabBarHeight
-            tabBar.frame = CGRect(x: 0, y: tabBarY, width: bounds.width, height: tabBarHeight)
+            let tabBarY = bounds.height - barHeight
+            tabBarContainer.frame = CGRect(x: 0, y: tabBarY, width: bounds.width, height: barHeight)
             contentContainer.frame = CGRect(
                 x: 0,
                 y: 0,
                 width: bounds.width,
-                height: bounds.height - tabBarHeight
+                height: bounds.height - barHeight
             )
         }
+
+        layoutTabButtons(in: tabBarContainer.bounds)
 
         // Layout content view
         currentContentView?.frame = contentContainer.bounds
     }
-}
 
-#if canImport(UIKit)
-extension WuiTabs: UITabBarDelegate {
-    func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
-        showTab(at: item.tag)
+    private func layoutTabButtons(in bounds: CGRect) {
+        guard !tabButtons.isEmpty else { return }
+        let count = CGFloat(tabButtons.count)
+        let buttonWidth = bounds.width / max(count, 1)
+        for (index, button) in tabButtons.enumerated() {
+            let x = CGFloat(index) * buttonWidth
+            button.frame = CGRect(x: x, y: 0, width: buttonWidth, height: bounds.height)
+        }
+    }
+
+    private func measuredTabBarHeight() -> CGFloat {
+        guard !tabButtons.isEmpty else { return 0 }
+        let availableWidth = bounds.width / CGFloat(tabButtons.count)
+        var maxHeight: CGFloat = 0
+        for button in tabButtons {
+            let size = button.sizeThatFits(CGSize(width: availableWidth, height: bounds.height))
+            maxHeight = max(maxHeight, size.height)
+        }
+
+        #if canImport(UIKit)
+        let baseline = UITabBar().sizeThatFits(bounds.size).height
+        return max(maxHeight, baseline)
+        #elseif canImport(AppKit)
+        let baseline = NSSegmentedControl().fittingSize.height
+        return max(maxHeight, baseline)
+        #endif
+    }
+
+    private func tabIdToInner(_ id: UInt64) -> Int32 {
+        Int32(bitPattern: UInt32(truncatingIfNeeded: id))
     }
 }
-#endif

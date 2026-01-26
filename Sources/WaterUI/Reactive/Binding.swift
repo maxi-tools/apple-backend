@@ -93,6 +93,21 @@ extension WuiBinding where T == WuiStr {
             drop: waterui_drop_binding_str
         )
     }
+
+    convenience init(secure inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: { inner in WuiStr(waterui_read_binding_secure(inner)) },
+            watch: { inner, f in
+                let g = waterui_watch_binding_secure(inner, makeSecureWatcher(f))
+                return WatcherGuard(g!)
+            },
+            set: { inner, value in
+                waterui_set_binding_secure(inner, value.intoInner())
+            },
+            drop: waterui_drop_binding_secure
+        )
+    }
 }
 
 extension WuiBinding where T == Int32 {

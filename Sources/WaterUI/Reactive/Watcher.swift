@@ -162,6 +162,23 @@ func makeStrWatcher(_ f: @escaping (WuiStr, WuiWatcherMetadata) -> Void) -> Opaq
 }
 
 @MainActor
+func makeSecureWatcher(_ f: @escaping (WuiStr, WuiWatcherMetadata) -> Void) -> OpaquePointer {
+    let data = wrap(f)
+    let call: @convention(c) (UnsafeMutableRawPointer?, CWaterUI.WuiStr, OpaquePointer?) -> Void = {
+        data, value, metadata in
+        let str = WuiStr(value)
+        callWrapper(data, str, metadata)
+    }
+    let drop: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
+        dropWrapper($0, WuiStr.self)
+    }
+    guard let watcher = waterui_new_watcher_secure(data, call, drop) else {
+        fatalError("Failed to create secure watcher")
+    }
+    return watcher
+}
+
+@MainActor
 func makeStyledStrWatcher(_ f: @escaping (WuiStyledStr, WuiWatcherMetadata) -> Void)
     -> OpaquePointer
 {
@@ -306,6 +323,46 @@ func makePickerItemsWatcher(_ f: @escaping (CWaterUI.WuiArray_WuiPickerItem, Wui
 }
 
 @MainActor
+func makeMenuItemsWatcher(_ f: @escaping (CWaterUI.WuiArray_WuiMenuItem, WuiWatcherMetadata) -> Void) -> OpaquePointer {
+    let data = wrap(f)
+    let call: @convention(c) (UnsafeMutableRawPointer?, CWaterUI.WuiArray_WuiMenuItem, OpaquePointer?) -> Void = {
+        data, value, metadata in
+        callWrapper(data, value, metadata)
+    }
+    let drop: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
+        dropWrapper($0, CWaterUI.WuiArray_WuiMenuItem.self)
+    }
+    guard let watcher = waterui_new_watcher_menu_items(data, call, drop) else {
+        fatalError("Failed to create menu items watcher")
+    }
+    return watcher
+}
+
+// MARK: - Views Collection Watchers
+
+final class Wrapper3<A, B, C> {
+    let inner: (A, B, C) -> Void
+    init(_ inner: @escaping (A, B, C) -> Void) { self.inner = inner }
+}
+
+@MainActor
+func callWrapper3<A, B, C>(
+    _ data: UnsafeMutableRawPointer?, _ a: A, _ b: B, _ c: C
+) {
+    let wrapper = Unmanaged<Wrapper3<A, B, C>>.fromOpaque(data!).takeUnretainedValue()
+    wrapper.inner(a, b, c)
+}
+
+func dropWrapper3<A, B, C>(_ data: UnsafeMutableRawPointer?, _: (A, B, C).Type) {
+    _ = Unmanaged<Wrapper3<A, B, C>>.fromOpaque(data!).takeRetainedValue()
+}
+
+func wrap3<A, B, C>(_ f: @escaping (A, B, C) -> Void) -> UnsafeMutableRawPointer {
+    let wrapper = Wrapper3(f)
+    return UnsafeMutableRawPointer(Unmanaged.passRetained(wrapper).toOpaque())
+}
+
+@MainActor
 func makeColorWatcher(_ f: @escaping (OpaquePointer, WuiWatcherMetadata) -> Void) -> OpaquePointer {
     let data = wrap(f)
     // The callback receives an opaque pointer to WuiColor
@@ -338,4 +395,3 @@ func makeRegionWatcher(_ f: @escaping (WuiRegion, WuiWatcherMetadata) -> Void) -
     }
     return watcher
 }
-

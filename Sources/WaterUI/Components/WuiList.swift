@@ -19,7 +19,7 @@ private let logger = Logger(subsystem: "dev.waterui", category: "WuiList")
 
 /// Data for a single list item including its content and deletable state.
 private struct ListItemData {
-    let id: Int
+    let id: Int32
     let view: WuiAnyView
     let deletable: WuiComputed<Bool>?
     var deletableWatcher: WatcherGuard?
@@ -33,8 +33,10 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
     private(set) var stretchAxis: WuiStretchAxis = .both
 
     private let env: WuiEnvironment
-    private var contentsHandle: OpaquePointer?
+    private let contents: WuiAnyViews
+    private var contentsWatcher: WatcherGuard?
     private var itemViews: [ListItemData] = []
+    private var itemIds: [Int32] = []
 
     // Edit mode state
     private var editingComputed: WuiComputed<Bool>?
@@ -45,7 +47,7 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
     private var onMovePtr: OpaquePointer?
 
     // Track pending deletions to avoid double-animation
-    private var pendingDeletions: Set<Int> = []
+    private var pendingDeletions: Set<Int32> = []
 
     // MARK: - WuiComponent Init
 
@@ -58,7 +60,7 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
 
     init(ffiList: CWaterUI.WuiList, env: WuiEnvironment) {
         self.env = env
-        self.contentsHandle = ffiList.contents
+        self.contents = WuiAnyViews(ffiList.contents)
         self.onDeletePtr = ffiList.on_delete
         self.onMovePtr = ffiList.on_move
         super.init(frame: .zero, style: .plain)
@@ -87,8 +89,12 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
             }
         }
 
-        // Load items
-        loadItems()
+        // Initial load + watch structural changes.
+        reloadFromRust(animated: false)
+        contentsWatcher = watchAnyViewsIds(contents) { [weak self] ids, metadata in
+            guard let self else { return }
+            self.applyRustUpdate(ids: ids, metadata: metadata)
+        }
     }
 
     @available(*, unavailable)
@@ -108,49 +114,98 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
 
     // MARK: - Item Loading
 
-    private func loadItems() {
-        guard let handle = contentsHandle else { return }
+    private func applyRustUpdate(ids: [Int32], metadata: WuiWatcherMetadata) {
+        let animated = metadata.animation != nil
+        updateFromRust(ids: ids, animated: animated)
+    }
 
-        let count = waterui_anyviews_len(handle)
-        itemViews.removeAll()
+    private func reloadFromRust(animated: Bool) {
+        let count = Int(waterui_anyviews_len(contents.ptr))
+        var ids: [Int32] = []
+        ids.reserveCapacity(count)
+        for i in 0..<count {
+            ids.append(waterui_anyviews_get_id(contents.ptr, UInt(i)).inner)
+        }
+        updateFromRust(ids: ids, animated: animated)
+    }
+
+    private func updateFromRust(ids: [Int32], animated: Bool) {
+        let count = Int(waterui_anyviews_len(contents.ptr))
+        precondition(count == ids.count, "List ids count mismatch: anyviews_len=\(count) ids=\(ids.count)")
+
+        let oldIds = itemIds
+        let newIds = ids
+
+        var newItems: [ListItemData] = []
+        newItems.reserveCapacity(count)
 
         for i in 0..<count {
-            let id = waterui_anyviews_get_id(handle, i)
-            guard let viewPtr = waterui_anyviews_get_view(handle, i) else { continue }
+            guard let viewPtr = waterui_anyviews_get_view(contents.ptr, UInt(i)) else {
+                fatalError("List item view pointer is null at index \(i)")
+            }
 
-            // Get the ListItem and extract its content
             let listItem = waterui_force_as_list_item(viewPtr)
-            guard let contentPtr = listItem.content else { continue }
+            guard let contentPtr = listItem.content else {
+                fatalError("List item content pointer is null at index \(i)")
+            }
 
             let contentView = WuiAnyView(anyview: contentPtr, env: env)
 
-            // Create deletable computed if pointer exists
-            var deletableComputed: WuiComputed<Bool>? = nil
-            if let deletablePtr = listItem.deletable {
-                deletableComputed = WuiComputed<Bool>(deletablePtr)
-            }
+            let deletableComputed: WuiComputed<Bool>? =
+                listItem.deletable.map { WuiComputed<Bool>($0) }
+
+            let itemId = newIds[i]
 
             var itemData = ListItemData(
-                id: Int(id.inner),
+                id: itemId,
                 view: contentView,
                 deletable: deletableComputed,
                 deletableWatcher: nil
             )
 
-            // Watch for deletable changes
-            let itemIndex = itemViews.count
-            itemData.deletableWatcher = deletableComputed?.watch { [weak self] _, _ in
-                guard let self = self else { return }
-                // Reload the specific row when deletable state changes
-                if itemIndex < self.itemViews.count {
-                    self.reloadRows(at: [IndexPath(row: itemIndex, section: 0)], with: .automatic)
-                }
+            itemData.deletableWatcher = deletableComputed?.watch { [weak self] _, metadata in
+                guard let self else { return }
+                let animated = metadata.animation != nil
+                guard let row = self.itemIds.firstIndex(of: itemId) else { return }
+                self.reloadRows(at: [IndexPath(row: row, section: 0)], with: animated ? .automatic : .none)
             }
 
-            itemViews.append(itemData)
+            newItems.append(itemData)
         }
 
-        reloadData()
+        itemViews = newItems
+        itemIds = newIds
+
+        guard animated else {
+            reloadData()
+            return
+        }
+
+        let diff = newIds.difference(from: oldIds).inferringMoves()
+        if diff.isEmpty {
+            return
+        }
+
+        performBatchUpdates {
+            let deletions = diff.removals.map { IndexPath(row: $0.offset, section: 0) }.sorted {
+                $0.row > $1.row
+            }
+            let insertions = diff.insertions.map { IndexPath(row: $0.offset, section: 0) }.sorted {
+                $0.row < $1.row
+            }
+
+            if !deletions.isEmpty { deleteRows(at: deletions, with: .automatic) }
+            if !insertions.isEmpty { insertRows(at: insertions, with: .automatic) }
+
+            for change in diff {
+                switch change {
+                case let .remove(offset, _, associatedWith: .some(to)):
+                    moveRow(at: IndexPath(row: offset, section: 0), to: IndexPath(row: to, section: 0))
+                default:
+                    break
+                }
+            }
+        }
     }
 
     // MARK: - WuiComponent
@@ -190,6 +245,7 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
 
             // Remove from local array first (optimistic)
             itemViews.remove(at: indexPath.row)
+            itemIds.remove(at: indexPath.row)
             tableView.deleteRows(at: [indexPath], with: .automatic)
 
             // Then call Rust callback
@@ -215,6 +271,7 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
 
             // Remove from local array first (optimistic)
             self.itemViews.remove(at: indexPath.row)
+            self.itemIds.remove(at: indexPath.row)
             self.deleteRows(at: [indexPath], with: .automatic)
 
             // Then call Rust callback
@@ -238,6 +295,8 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
         // Update local array
         let item = itemViews.remove(at: sourceIndexPath.row)
         itemViews.insert(item, at: destinationIndexPath.row)
+        let id = itemIds.remove(at: sourceIndexPath.row)
+        itemIds.insert(id, at: destinationIndexPath.row)
 
         // Call Rust callback
         if let movePtr = onMovePtr {
@@ -310,8 +369,10 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
     private(set) var stretchAxis: WuiStretchAxis = .both
 
     private let env: WuiEnvironment
-    private var contentsHandle: OpaquePointer?
+    private let contents: WuiAnyViews
+    private var contentsWatcher: WatcherGuard?
     private var itemViews: [ListItemData] = []
+    private var itemIds: [Int32] = []
     private let tableView: NSTableView
 
     // Edit mode state
@@ -337,7 +398,7 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
 
     init(ffiList: CWaterUI.WuiList, env: WuiEnvironment) {
         self.env = env
-        self.contentsHandle = ffiList.contents
+        self.contents = WuiAnyViews(ffiList.contents)
         self.onDeletePtr = ffiList.on_delete
         self.onMovePtr = ffiList.on_move
         self.tableView = NSTableView()
@@ -383,8 +444,12 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
             }
         }
 
-        // Load items
-        loadItems()
+        // Initial load + watch structural changes.
+        reloadFromRust(animated: false)
+        contentsWatcher = watchAnyViewsIds(contents) { [weak self] ids, metadata in
+            guard let self else { return }
+            self.applyRustUpdate(ids: ids, metadata: metadata)
+        }
     }
 
     @available(*, unavailable)
@@ -404,49 +469,99 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
 
     // MARK: - Item Loading
 
-    private func loadItems() {
-        guard let handle = contentsHandle else { return }
+    private func applyRustUpdate(ids: [Int32], metadata: WuiWatcherMetadata) {
+        let animated = metadata.animation != nil
+        updateFromRust(ids: ids, animated: animated)
+    }
 
-        let count = waterui_anyviews_len(handle)
-        itemViews.removeAll()
+    private func reloadFromRust(animated: Bool) {
+        let count = Int(waterui_anyviews_len(contents.ptr))
+        var ids: [Int32] = []
+        ids.reserveCapacity(count)
+        for i in 0..<count {
+            ids.append(waterui_anyviews_get_id(contents.ptr, UInt(i)).inner)
+        }
+        updateFromRust(ids: ids, animated: animated)
+    }
+
+    private func updateFromRust(ids: [Int32], animated: Bool) {
+        let count = Int(waterui_anyviews_len(contents.ptr))
+        precondition(count == ids.count, "List ids count mismatch: anyviews_len=\(count) ids=\(ids.count)")
+
+        let oldIds = itemIds
+        let newIds = ids
+
+        var newItems: [ListItemData] = []
+        newItems.reserveCapacity(count)
 
         for i in 0..<count {
-            let id = waterui_anyviews_get_id(handle, i)
-            guard let viewPtr = waterui_anyviews_get_view(handle, i) else { continue }
-
-            // Get the ListItem and extract its content
-            let listItem = waterui_force_as_list_item(viewPtr)
-            guard let contentPtr = listItem.content else { continue }
-
-            let contentView = WuiAnyView(anyview: contentPtr, env: env)
-
-            // Create deletable computed if pointer exists
-            var deletableComputed: WuiComputed<Bool>? = nil
-            if let deletablePtr = listItem.deletable {
-                deletableComputed = WuiComputed<Bool>(deletablePtr)
+            guard let viewPtr = waterui_anyviews_get_view(contents.ptr, UInt(i)) else {
+                fatalError("List item view pointer is null at index \(i)")
             }
 
+            let listItem = waterui_force_as_list_item(viewPtr)
+            guard let contentPtr = listItem.content else {
+                fatalError("List item content pointer is null at index \(i)")
+            }
+
+            let contentView = WuiAnyView(anyview: contentPtr, env: env)
+            let deletableComputed: WuiComputed<Bool>? =
+                listItem.deletable.map { WuiComputed<Bool>($0) }
+
+            let itemId = newIds[i]
             var itemData = ListItemData(
-                id: Int(id.inner),
+                id: itemId,
                 view: contentView,
                 deletable: deletableComputed,
                 deletableWatcher: nil
             )
 
-            // Watch for deletable changes
-            let itemIndex = itemViews.count
-            itemData.deletableWatcher = deletableComputed?.watch { [weak self] _, _ in
-                guard let self = self else { return }
-                // Reload the specific row when deletable state changes
-                if itemIndex < self.itemViews.count {
-                    self.tableView.reloadData(forRowIndexes: IndexSet(integer: itemIndex), columnIndexes: IndexSet(integer: 0))
+            itemData.deletableWatcher = deletableComputed?.watch { [weak self] _, metadata in
+                guard let self else { return }
+                guard let row = self.itemIds.firstIndex(of: itemId) else { return }
+                let rowIndex = IndexSet(integer: row)
+                let colIndex = IndexSet(integer: 0)
+                if metadata.animation != nil {
+                    self.tableView.reloadData(forRowIndexes: rowIndex, columnIndexes: colIndex)
+                } else {
+                    self.tableView.reloadData(forRowIndexes: rowIndex, columnIndexes: colIndex)
                 }
             }
 
-            itemViews.append(itemData)
+            newItems.append(itemData)
         }
 
-        tableView.reloadData()
+        itemViews = newItems
+        itemIds = newIds
+
+        guard animated else {
+            tableView.reloadData()
+            return
+        }
+
+        let diff = newIds.difference(from: oldIds).inferringMoves()
+        if diff.isEmpty {
+            return
+        }
+
+        tableView.beginUpdates()
+        let deletions = diff.removals.map(\.offset).sorted(by: >)
+        let insertions = diff.insertions.map(\.offset).sorted(by: <)
+        if !deletions.isEmpty {
+            tableView.removeRows(at: IndexSet(deletions), withAnimation: .slideUp)
+        }
+        if !insertions.isEmpty {
+            tableView.insertRows(at: IndexSet(insertions), withAnimation: .slideDown)
+        }
+        for change in diff {
+            switch change {
+            case let .remove(from, _, associatedWith: .some(to)):
+                tableView.moveRow(at: from, to: to)
+            default:
+                break
+            }
+        }
+        tableView.endUpdates()
     }
 
     // MARK: - Delete Action
@@ -459,6 +574,7 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
 
         // Remove from local array first (optimistic)
         itemViews.remove(at: row)
+        itemIds.remove(at: row)
         tableView.removeRows(at: IndexSet(integer: row), withAnimation: .slideUp)
 
         // Then call Rust callback
@@ -515,6 +631,8 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
         // Update local array
         let movedItem = itemViews.remove(at: sourceRow)
         itemViews.insert(movedItem, at: destinationRow)
+        let movedId = itemIds.remove(at: sourceRow)
+        itemIds.insert(movedId, at: destinationRow)
 
         // Animate the move
         tableView.moveRow(at: sourceRow, to: destinationRow)
@@ -537,6 +655,7 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
         containerView.translatesAutoresizingMaskIntoConstraints = false
 
         // Add content view
+        item.view.removeFromSuperview()
         item.view.translatesAutoresizingMaskIntoConstraints = false
         containerView.addSubview(item.view)
 
@@ -544,7 +663,7 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
         if isInEditMode, onDeletePtr != nil, item.deletable?.value ?? true {
             let deleteButton = NSButton(title: "Delete", target: self, action: #selector(deleteButtonClicked(_:)))
             deleteButton.bezelStyle = .inline
-            deleteButton.tag = row
+            deleteButton.identifier = NSUserInterfaceItemIdentifier(String(item.id))
             deleteButton.translatesAutoresizingMaskIntoConstraints = false
             containerView.addSubview(deleteButton)
 
@@ -570,7 +689,11 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
     }
 
     @objc private func deleteButtonClicked(_ sender: NSButton) {
-        deleteItem(at: sender.tag)
+        guard let raw = sender.identifier?.rawValue, let id = Int32(raw),
+              let row = itemIds.firstIndex(of: id) else {
+            return
+        }
+        deleteItem(at: row)
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {

@@ -45,10 +45,35 @@ private let showWindowImpl: @convention(c) (WuiWindow) -> Void = { wuiWindow in
 
 /// Get the window title from a WuiWindow
 @MainActor
-private func getWindowTitle(_ wuiWindow: WuiWindow) -> String {
-    guard let titlePtr = wuiWindow.title else { return "Untitled" }
+private func getWindowTitle(_ titlePtr: OpaquePointer?) -> String {
+    guard let titlePtr else { return "Untitled" }
     let ffiStr = waterui_read_computed_str(titlePtr)
     return WuiStr(ffiStr).toString()
+}
+
+@MainActor
+private final class WindowResources {
+    var title: OpaquePointer?
+    var titleWatcher: WatcherGuard?
+
+    var stateBinding: OpaquePointer?
+    var stateWatcher: WatcherGuard?
+
+    func stopWatchers() {
+        titleWatcher = nil
+        stateWatcher = nil
+    }
+
+    deinit {
+        stopWatchers()
+
+        if let stateBinding {
+            waterui_drop_binding_window_state(stateBinding)
+        }
+        if let title {
+            waterui_drop_computed_str(title)
+        }
+    }
 }
 
 /// Installs the WindowManager into the environment.
@@ -90,8 +115,12 @@ final class WindowManagerImpl {
         }
         logger.debug("Global environment: \(String(describing: globalEnv.inner))")
 
+        let resources = WindowResources()
+        resources.title = wuiWindow.title.map { OpaquePointer(UnsafeMutableRawPointer($0)) }
+        resources.stateBinding = wuiWindow.state.map { OpaquePointer(UnsafeMutableRawPointer($0)) }
+
         // Get window title
-        let title = getWindowTitle(wuiWindow)
+        let title = getWindowTitle(resources.title)
         logger.debug("Creating window: \(title)")
 
         // Create window with appropriate style
@@ -128,8 +157,13 @@ final class WindowManagerImpl {
         switch wuiWindow.background.tag {
         case WuiWindowBackground_Color:
             if let colorPtr = wuiWindow.background.color.color {
+                // Native takes ownership of the color pointer passed in `WuiWindowBackground::Color`.
+                // Resolve it once for the NSWindow and then drop the pointer.
                 let env = globalEnv.inner
-                if let resolvedSignal = waterui_resolve_color(colorPtr, env) {
+                let ownedColor = OpaquePointer(UnsafeMutableRawPointer(colorPtr))
+                defer { waterui_drop_color(ownedColor) }
+
+                if let resolvedSignal = waterui_resolve_color(ownedColor, env) {
                     let resolvedColor = waterui_read_computed_resolved_color(resolvedSignal)
                     let nsColor = NSColor(
                         red: CGFloat(resolvedColor.red),
@@ -153,14 +187,9 @@ final class WindowManagerImpl {
         containerView.addSubview(contentView)
         window.contentView = containerView
 
-        // Convert state binding to opaque pointer for use in delegate
-        let stateBindingPtr: OpaquePointer? = wuiWindow.state.map {
-            OpaquePointer(UnsafeMutableRawPointer($0))
-        }
-
         // Set up window delegate to track state changes and update binding on native close
         let delegate = WindowDelegate(
-            stateBinding: stateBindingPtr,
+            resources: resources,
             contentView: contentView,
             onClose: { [weak self] closedWindow in
                 self?.removeWindow(closedWindow)
@@ -171,9 +200,20 @@ final class WindowManagerImpl {
         // Keep delegate alive
         objc_setAssociatedObject(window, "windowDelegate", delegate, .OBJC_ASSOCIATION_RETAIN)
 
-        // Watch the window's state binding for programmatic close
-        if let stateBindingPtr {
-            watchWindowState(stateBindingPtr, window: window)
+        // Watch the window's state binding for programmatic changes (close/minimize/fullscreen)
+        if let stateBindingPtr = resources.stateBinding {
+            resources.stateWatcher = watchWindowState(stateBindingPtr, window: window)
+        }
+
+        // Watch title for live updates
+        if let titlePtr = resources.title {
+            let watcher = makeStrWatcher { [weak window] str, _ in
+                guard let window else { return }
+                window.title = str.toString()
+            }
+            if let guardPtr = waterui_watch_computed_str(titlePtr, watcher) {
+                resources.titleWatcher = WatcherGuard(guardPtr)
+            }
         }
 
         // Track the window
@@ -204,7 +244,7 @@ final class WindowManagerImpl {
     }
 
     /// Watch the window state binding for programmatic close requests
-    private func watchWindowState(_ binding: OpaquePointer, window: NSWindow) {
+    private func watchWindowState(_ binding: OpaquePointer, window: NSWindow) -> WatcherGuard? {
         // Create a watcher to monitor state changes
         let windowRef = Unmanaged.passUnretained(window).toOpaque()
 
@@ -232,10 +272,9 @@ final class WindowManagerImpl {
         )
 
         if let watcher = watcher, let guard_ = waterui_watch_binding_window_state(binding, watcher) {
-            // Store the watcher guard with the window to keep it alive
-            let guardWrapper = WatcherGuard(guard_)
-            objc_setAssociatedObject(window, "stateWatcherGuard", guardWrapper, .OBJC_ASSOCIATION_RETAIN)
+            return WatcherGuard(guard_)
         }
+        return nil
     }
 
     /// Remove a window from tracking
@@ -261,28 +300,29 @@ final class WindowManagerImpl {
 
 /// Window delegate to track state changes and cleanup
 private class WindowDelegate: NSObject, NSWindowDelegate {
-    /// The state binding to update when the native close button is clicked
-    let stateBinding: OpaquePointer?
+    private var resources: WindowResources?
     let onClose: (NSWindow) -> Void
     /// Reference to the content view for dynamic min size updates
     weak var contentView: WuiAnyView?
 
-    init(stateBinding: OpaquePointer?, contentView: WuiAnyView?, onClose: @escaping (NSWindow) -> Void) {
-        self.stateBinding = stateBinding
+    init(resources: WindowResources, contentView: WuiAnyView?, onClose: @escaping (NSWindow) -> Void) {
+        self.resources = resources
         self.contentView = contentView
         self.onClose = onClose
         super.init()
     }
 
- 
-
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
 
         // Update the state binding to Closed so Rust knows the window was closed
-        if let binding = stateBinding {
+        if let binding = resources?.stateBinding {
             waterui_set_binding_window_state(binding, WuiWindowState_Closed)
         }
+
+        // Stop watchers first to avoid callbacks racing during teardown.
+        resources?.stopWatchers()
+        resources = nil
 
         onClose(window)
     }

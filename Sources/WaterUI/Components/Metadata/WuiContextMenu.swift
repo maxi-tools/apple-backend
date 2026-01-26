@@ -18,8 +18,7 @@ final class WuiContextMenu: PlatformView, WuiComponent {
 
     private let contentView: any WuiComponent
     private let env: WuiEnvironment
-    private let itemsPtr: OpaquePointer?
-    private var disposeBag: [() -> Void] = []
+    private let items: WuiComputed<CWaterUI.WuiArray_WuiMenuItem>
 
     var stretchAxis: WuiStretchAxis {
         contentView.stretchAxis
@@ -29,11 +28,10 @@ final class WuiContextMenu: PlatformView, WuiComponent {
         let metadata = waterui_force_as_metadata_context_menu(anyview)
 
         self.env = env
-        if let ptr = metadata.value.items {
-            self.itemsPtr = OpaquePointer(UnsafeRawPointer(ptr))
-        } else {
-            self.itemsPtr = nil
+        guard let itemsPtr = metadata.value.items else {
+            fatalError("ContextMenu.items is null")
         }
+        self.items = WuiComputed<CWaterUI.WuiArray_WuiMenuItem>(OpaquePointer(itemsPtr))
 
         // Resolve the content
         self.contentView = WuiAnyView.resolve(anyview: metadata.content, env: env)
@@ -63,28 +61,18 @@ final class WuiContextMenu: PlatformView, WuiComponent {
     }
 
     private func buildMenuItems() -> [MenuItemData] {
-        guard let itemsPtr = itemsPtr else { return [] }
-        let items = waterui_read_computed_menu_items(itemsPtr)
+        let rawItems = WuiArray<CWaterUI.WuiMenuItem>(items.value).toArray()
         var menuItems: [MenuItemData] = []
+        menuItems.reserveCapacity(rawItems.count)
 
-        let slice = items.vtable.slice(items.data.assumingMemoryBound(to: Void.self))
-        guard let head = slice.head else { return [] }
-
-        for i in 0..<slice.len {
-            let item = head.advanced(by: Int(i)).pointee
-            // Get the label text
-            guard let textPtr = item.label.content else { continue }
+        for item in rawItems {
+            guard let textPtr = item.label.content else {
+                fatalError("MenuItem.label.content is null")
+            }
             let styledStr = waterui_read_computed_styled_str(textPtr)
             let label = extractPlainText(from: styledStr)
-
-            var actionPtr: OpaquePointer? = nil
-            if let ptr = item.action {
-                actionPtr = OpaquePointer(UnsafeRawPointer(ptr))
-            }
-            menuItems.append(MenuItemData(
-                label: label,
-                actionPtr: actionPtr
-            ))
+            let actionPtr: OpaquePointer? = item.action.map { OpaquePointer(UnsafeRawPointer($0)) }
+            menuItems.append(MenuItemData(label: label, actionPtr: actionPtr))
         }
 
         return menuItems

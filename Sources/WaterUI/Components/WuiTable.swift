@@ -479,7 +479,7 @@ final class WuiTable: PlatformView, WuiComponent {
 
 extension WuiTable: NSTableViewDataSource {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        nativeColumns.first?.rows.count ?? 0
+        nativeColumns.map { $0.rows.count }.max() ?? 0
     }
 }
 

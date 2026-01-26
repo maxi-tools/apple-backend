@@ -219,21 +219,23 @@ private func loadLivePhoto(from itemProvider: NSItemProvider, id: UInt32, callba
     var videoURL: URL?
     var loadError: Error?
 
-    // Load image component
+    // Load image component (HEIC, fallback JPEG). Ensure the DispatchGroup only leaves once
+    // the fallback (if any) has completed.
     group.enter()
     itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.heic.identifier) { url, error in
-        defer { group.leave() }
         if let url = url {
             imageURL = copyToTempDirectory(url, extension: "heic")
-        } else {
-            // Fallback to JPEG
-            itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.jpeg.identifier) { url, error in
-                if let url = url {
-                    imageURL = copyToTempDirectory(url, extension: "jpg")
-                } else {
-                    loadError = error
-                }
+            group.leave()
+            return
+        }
+
+        itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.jpeg.identifier) { url, jpegError in
+            if let url = url {
+                imageURL = copyToTempDirectory(url, extension: "jpg")
+            } else {
+                loadError = jpegError ?? error
             }
+            group.leave()
         }
     }
 
@@ -383,6 +385,9 @@ final class MediaPickerManagerImpl {
                     callback(id)
                     self.pendingCallback = nil
                 }
+            } else {
+                // User cancelled.
+                self.pendingCallback = nil
             }
         }
     }
@@ -401,6 +406,9 @@ extension MediaPickerManagerImpl: PHPickerViewControllerDelegate {
 
             if let id = selectedId, let callback = self.pendingCallback {
                 callback(id)
+                self.pendingCallback = nil
+            } else {
+                // User cancelled or selection failed.
                 self.pendingCallback = nil
             }
         }

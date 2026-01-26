@@ -160,6 +160,20 @@ extension WuiArray<UInt8> {
     }
 }
 
+extension WuiArray where T == CWaterUI.WuiMenuItem {
+    init(_ inner: CWaterUI.WuiArray_WuiMenuItem) {
+        let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)
+        self.init(c: raw)
+    }
+}
+
+extension WuiArray where T == CWaterUI.WuiId {
+    init(_ inner: CWaterUI.WuiArray_WuiId) {
+        let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)
+        self.init(c: raw)
+    }
+}
+
 extension WuiArray<OpaquePointer> {
     init(_ inner: CWaterUI.WuiArray_____WuiAnyView) {
         let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)

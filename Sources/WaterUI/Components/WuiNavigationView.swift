@@ -19,7 +19,7 @@ final class WuiNavigationView: PlatformView, WuiComponent {
 
     private(set) var stretchAxis: WuiStretchAxis = .both
 
-    private var titleLabel: PlatformLabel
+    private var titleView: WuiAnyView
     private var contentView: WuiAnyView
     private let env: WuiEnvironment
 
@@ -35,11 +35,8 @@ final class WuiNavigationView: PlatformView, WuiComponent {
     private var hasNavigationController: Bool = false
 
     #if canImport(UIKit)
-    private let navBarHeight: CGFloat = 44.0
     private let navBarView: UIView = UIView()
-    private var backButton: UIButton?
     #elseif canImport(AppKit)
-    private let navBarHeight: CGFloat = 38.0
     private let navBarView: NSView = NSView()
     private var backButton: NSButton?
     #endif
@@ -54,22 +51,14 @@ final class WuiNavigationView: PlatformView, WuiComponent {
     /// Initialize from FFI struct directly (used by NavigationStack when pushing)
     convenience init(ffiNav: CWaterUI.WuiNavigationView, env: WuiEnvironment) {
         let contentView = WuiAnyView(anyview: ffiNav.content, env: env)
-
-        // Extract bar configuration - read title from computed styled string
-        var titleString = ""
-        if let contentPtr = ffiNav.bar.title.content {
-            let titleContent = WuiComputed<WuiStyledStr>(contentPtr)
-            titleString = titleContent.value.toString()
-        }
+        let barState = makeNavigationBarState(from: ffiNav.bar, env: env)
 
         // Check if we're inside a navigation stack
         let hasNavController = waterui_env_has_navigation_controller(env.inner)
 
         self.init(
-            title: titleString,
             content: contentView,
-            colorPtr: ffiNav.bar.color,
-            hiddenPtr: ffiNav.bar.hidden,
+            barState: barState,
             env: env,
             hasNavigationController: hasNavController
         )
@@ -78,29 +67,22 @@ final class WuiNavigationView: PlatformView, WuiComponent {
     // MARK: - Designated Init
 
     init(
-        title: String,
         content: WuiAnyView,
-        colorPtr: OpaquePointer?,
-        hiddenPtr: OpaquePointer?,
+        barState: WuiNavigationBarState,
         env: WuiEnvironment,
         hasNavigationController: Bool
     ) {
         self.contentView = content
         self.env = env
         self.hasNavigationController = hasNavigationController
-
-        #if canImport(UIKit)
-        self.titleLabel = UILabel()
-        #elseif canImport(AppKit)
-        self.titleLabel = NSTextField(labelWithString: "")
-        #endif
+        self.titleView = barState.title.view
 
         super.init(frame: .zero)
 
-        configureNavBar(title: title)
+        configureNavBar()
         configureContent()
-        setupColorWatcher(colorPtr: colorPtr)
-        setupHiddenWatcher(hiddenPtr: hiddenPtr)
+        setupColorWatcher(barState.color)
+        setupHiddenWatcher(barState.hidden)
     }
 
     @available(*, unavailable)
@@ -110,7 +92,7 @@ final class WuiNavigationView: PlatformView, WuiComponent {
 
     // MARK: - Configuration
 
-    private func configureNavBar(title: String) {
+    private func configureNavBar() {
         // When inside a NavigationStack, native navigation chrome handles the bar.
         // - iOS: UINavigationController provides native nav bar with back button and swipe gesture
         // - macOS: Window toolbar provides back button
@@ -125,18 +107,9 @@ final class WuiNavigationView: PlatformView, WuiComponent {
 
         #if canImport(UIKit)
         navBarView.backgroundColor = .systemBackground
-        titleLabel.text = title
-        titleLabel.font = .boldSystemFont(ofSize: 17)
-        titleLabel.textAlignment = .center
         #elseif canImport(AppKit)
         navBarView.wantsLayer = true
         navBarView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        titleLabel.stringValue = title
-        titleLabel.font = .boldSystemFont(ofSize: 13)
-        titleLabel.alignment = .center
-        titleLabel.isBordered = false
-        titleLabel.isEditable = false
-        titleLabel.drawsBackground = false
 
         // Add back button if NOT inside navigation stack (standalone NavigationView)
         // When inside NavigationStack, the toolbar provides back button
@@ -148,8 +121,8 @@ final class WuiNavigationView: PlatformView, WuiComponent {
         self.backButton = button
         #endif
 
-        titleLabel.translatesAutoresizingMaskIntoConstraints = true
-        navBarView.addSubview(titleLabel)
+        titleView.translatesAutoresizingMaskIntoConstraints = true
+        navBarView.addSubview(titleView)
 
         // Add bottom border
         #if canImport(UIKit)
@@ -175,34 +148,24 @@ final class WuiNavigationView: PlatformView, WuiComponent {
         addSubview(contentView)
     }
 
-    private func setupColorWatcher(colorPtr: OpaquePointer?) {
-        guard let colorPtr = colorPtr else { return }
-
-        // Read the Color from Computed<Color>, then resolve it to get Computed<ResolvedColor>
-        let color = WuiColor(waterui_read_computed_color(colorPtr)!)
-        let resolved = color.resolve(in: env)
-        self.barColor = resolved
-
-        applyBarColor(resolved.value)
-
-        colorWatcher = resolved.watch { [weak self] color, metadata in
-            guard let self = self else { return }
+    private func setupColorWatcher(_ color: WuiComputed<WuiResolvedColor>?) {
+        guard let color else { return }
+        self.barColor = color
+        applyBarColor(color.value)
+        colorWatcher = color.watch { [weak self] value, metadata in
+            guard let self else { return }
             withPlatformAnimation(metadata) {
-                self.applyBarColor(color)
+                self.applyBarColor(value)
             }
         }
     }
 
-    private func setupHiddenWatcher(hiddenPtr: OpaquePointer?) {
-        guard let hiddenPtr = hiddenPtr else { return }
-
-        let hidden = WuiComputed<Bool>(hiddenPtr)
+    private func setupHiddenWatcher(_ hidden: WuiComputed<Bool>?) {
+        guard let hidden else { return }
         self.barHidden = hidden
-
         applyBarHidden(hidden.value)
-
-        hiddenWatcher = hidden.watch { [weak self] hidden, _ in
-            self?.applyBarHidden(hidden)
+        hiddenWatcher = hidden.watch { [weak self] value, _ in
+            self?.applyBarHidden(value)
         }
     }
 
@@ -248,7 +211,7 @@ final class WuiNavigationView: PlatformView, WuiComponent {
     #endif
 
     private func performLayout() {
-        let barHeight = navBarView.isHidden ? 0 : navBarHeight
+        let barHeight = navBarView.isHidden ? 0 : measuredNavBarHeight()
 
         // Position nav bar at top
         navBarView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: barHeight)
@@ -265,8 +228,8 @@ final class WuiNavigationView: PlatformView, WuiComponent {
         }
 
         // Center title in nav bar
-        let titleSize = titleLabel.sizeThatFits(CGSize(width: bounds.width - 150, height: barHeight))
-        titleLabel.frame = CGRect(
+        let titleSize = titleView.sizeThatFits(WuiProposalSize(width: Float(bounds.width), height: Float(barHeight)))
+        titleView.frame = CGRect(
             x: (bounds.width - titleSize.width) / 2,
             y: (barHeight - titleSize.height) / 2,
             width: titleSize.width,
@@ -274,7 +237,7 @@ final class WuiNavigationView: PlatformView, WuiComponent {
         )
 
         // Position border at bottom of nav bar
-        if let border = navBarView.subviews.last, border !== titleLabel && border !== backButton {
+        if let border = navBarView.subviews.last, border !== titleView && border !== backButton {
             border.frame = CGRect(x: 0, y: barHeight - 1, width: bounds.width, height: 1)
         }
 
@@ -282,5 +245,17 @@ final class WuiNavigationView: PlatformView, WuiComponent {
         let contentY = barHeight
         let contentHeight = bounds.height - barHeight
         contentView.frame = CGRect(x: 0, y: contentY, width: bounds.width, height: contentHeight)
+    }
+
+    private func measuredNavBarHeight() -> CGFloat {
+        #if canImport(UIKit)
+        let bar = UINavigationBar()
+        let size = bar.sizeThatFits(CGSize(width: bounds.width, height: UIView.layoutFittingCompressedSize.height))
+        return size.height
+        #elseif canImport(AppKit)
+        let titleSize = titleView.sizeThatFits(WuiProposalSize(width: Float(bounds.width), height: nil))
+        let backSize = backButton?.sizeThatFits(CGSize(width: bounds.width, height: bounds.height)) ?? .zero
+        return max(titleSize.height, backSize.height)
+        #endif
     }
 }

@@ -55,12 +55,12 @@ extension WuiComputed where T == WuiStr {
     convenience init(_ inner: OpaquePointer) {
         self.init(
             inner: inner,
-            read: { inner in WuiStr(waterui_read_binding_str(inner)) },
+            read: { inner in WuiStr(waterui_read_computed_str(inner)) },
             watch: { inner, f in
-                let g = waterui_watch_binding_str(inner, makeStrWatcher(f))
+                let g = waterui_watch_computed_str(inner, makeStrWatcher(f))
                 return WatcherGuard(g!)
             },
-            drop: waterui_drop_binding_str
+            drop: waterui_drop_computed_str
         )
     }
 }
@@ -69,12 +69,12 @@ extension WuiComputed where T == Int32 {
     convenience init(_ inner: OpaquePointer) {
         self.init(
             inner: inner,
-            read: waterui_read_binding_i32,
+            read: waterui_read_computed_i32,
             watch: { inner, f in
-                let g = waterui_watch_binding_i32(inner, makeIntWatcher(f))
+                let g = waterui_watch_computed_i32(inner, makeIntWatcher(f))
                 return WatcherGuard(g!)
             },
-            drop: waterui_drop_binding_i32
+            drop: waterui_drop_computed_i32
         )
     }
 }
@@ -83,12 +83,12 @@ extension WuiComputed where T == Bool {
     convenience init(_ inner: OpaquePointer) {
         self.init(
             inner: inner,
-            read: waterui_read_binding_bool,
+            read: waterui_read_computed_bool,
             watch: { inner, f in
-                let g = waterui_watch_binding_bool(inner, makeBoolWatcher(f))
+                let g = waterui_watch_computed_bool(inner, makeBoolWatcher(f))
                 return WatcherGuard(g!)
             },
-            drop: waterui_drop_binding_bool
+            drop: waterui_drop_computed_bool
         )
     }
 }
@@ -97,12 +97,12 @@ extension WuiComputed where T == Double {
     convenience init(_ inner: OpaquePointer) {
         self.init(
             inner: inner,
-            read: waterui_read_binding_f64,
+            read: waterui_read_computed_f64,
             watch: { inner, f in
-                let g = waterui_watch_binding_f64(inner, makeDoubleWatcher(f))
+                let g = waterui_watch_computed_f64(inner, makeDoubleWatcher(f))
                 return WatcherGuard(g!)
             },
-            drop: waterui_drop_binding_f64
+            drop: waterui_drop_computed_f64
         )
     }
 }
@@ -111,12 +111,12 @@ extension WuiComputed where T == Float {
     convenience init(_ inner: OpaquePointer) {
         self.init(
             inner: inner,
-            read: waterui_read_binding_f32,
+            read: waterui_read_computed_f32,
             watch: { inner, f in
-                let g = waterui_watch_binding_f32(inner, makeFloatWatcher(f))
+                let g = waterui_watch_computed_f32(inner, makeFloatWatcher(f))
                 return WatcherGuard(g!)
             },
-            drop: waterui_drop_binding_f32
+            drop: waterui_drop_computed_f32
         )
     }
 }
@@ -185,6 +185,22 @@ extension WuiComputed where T == CWaterUI.WuiArray_WuiPickerItem {
     }
 }
 
+extension WuiComputed where T == CWaterUI.WuiArray_WuiMenuItem {
+    convenience init(_ inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: { inner in
+                return waterui_read_computed_menu_items(inner)
+            },
+            watch: { inner, f in
+                let g = waterui_watch_computed_menu_items(inner, makeMenuItemsWatcher(f))
+                return WatcherGuard(g!)
+            },
+            drop: waterui_drop_computed_menu_items
+        )
+    }
+}
+
 extension WuiComputed where T == WuiCursorStyle {
     convenience init(_ inner: OpaquePointer) {
         self.init(
@@ -200,5 +216,3 @@ extension WuiComputed where T == WuiCursorStyle {
         )
     }
 }
-
-

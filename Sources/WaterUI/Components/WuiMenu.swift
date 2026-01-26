@@ -18,8 +18,8 @@ final class WuiMenu: PlatformView, WuiComponent {
 
     private let labelView: any WuiComponent
     private let env: WuiEnvironment
-    private let itemsPtr: OpaquePointer?
-    private var disposeBag: [() -> Void] = []
+    private let items: WuiComputed<CWaterUI.WuiArray_WuiMenuItem>
+    private var itemsWatcher: WatcherGuard?
 
     #if canImport(UIKit)
     private let button = UIButton(type: .system)
@@ -33,11 +33,10 @@ final class WuiMenu: PlatformView, WuiComponent {
         let menu = waterui_force_as_menu(anyview)
 
         self.env = env
-        if let ptr = menu.items {
-            self.itemsPtr = OpaquePointer(UnsafeRawPointer(ptr))
-        } else {
-            self.itemsPtr = nil
+        guard let itemsPtr = menu.items else {
+            fatalError("WuiMenu.items is null")
         }
+        self.items = WuiComputed<CWaterUI.WuiArray_WuiMenuItem>(OpaquePointer(itemsPtr))
 
         // Resolve the label view
         self.labelView = WuiAnyView.resolve(anyview: menu.label, env: env)
@@ -45,6 +44,7 @@ final class WuiMenu: PlatformView, WuiComponent {
         super.init(frame: .zero)
 
         setupButton()
+        startWatching()
     }
 
     @available(*, unavailable)
@@ -74,7 +74,7 @@ final class WuiMenu: PlatformView, WuiComponent {
         ])
 
         // Build and attach menu
-        button.menu = buildUIMenu()
+        button.menu = buildUIMenu(items.value)
         button.showsMenuAsPrimaryAction = true
 
         #elseif canImport(AppKit)
@@ -91,31 +91,25 @@ final class WuiMenu: PlatformView, WuiComponent {
         ])
 
         // Build menu items
-        rebuildMenu()
+        rebuildMenu(items.value)
         #endif
     }
 
-    private func buildMenuItems() -> [MenuItemData] {
-        guard let itemsPtr = itemsPtr else { return [] }
-        let items = waterui_read_computed_menu_items(itemsPtr)
+    private func buildMenuItems(_ array: CWaterUI.WuiArray_WuiMenuItem) -> [MenuItemData] {
+        let items = WuiArray<CWaterUI.WuiMenuItem>(array).toArray()
         var menuItems: [MenuItemData] = []
+        menuItems.reserveCapacity(items.count)
 
-        let slice = items.vtable.slice(items.data.assumingMemoryBound(to: Void.self))
-        guard let head = slice.head else { return [] }
-
-        for i in 0..<slice.len {
-            let item = head.advanced(by: Int(i)).pointee
-            guard let textPtr = item.label.content else { continue }
+        for item in items {
+            guard let textPtr = item.label.content else {
+                fatalError("MenuItem.label.content is null")
+            }
             let styledStr = waterui_read_computed_styled_str(textPtr)
             let label = extractPlainText(from: styledStr)
 
-            var actionPtr: OpaquePointer? = nil
-            if let ptr = item.action {
-                actionPtr = OpaquePointer(UnsafeRawPointer(ptr))
-            }
+            let actionPtr: OpaquePointer? = item.action.map { OpaquePointer(UnsafeRawPointer($0)) }
             menuItems.append(MenuItemData(label: label, actionPtr: actionPtr))
         }
-
         return menuItems
     }
 
@@ -135,8 +129,8 @@ final class WuiMenu: PlatformView, WuiComponent {
     }
 
     #if canImport(UIKit)
-    private func buildUIMenu() -> UIMenu {
-        let menuItems = buildMenuItems()
+    private func buildUIMenu(_ array: CWaterUI.WuiArray_WuiMenuItem) -> UIMenu {
+        let menuItems = buildMenuItems(array)
         var actions: [UIAction] = []
 
         for item in menuItems {
@@ -152,7 +146,7 @@ final class WuiMenu: PlatformView, WuiComponent {
     #endif
 
     #if canImport(AppKit)
-    private func rebuildMenu() {
+    private func rebuildMenu(_ array: CWaterUI.WuiArray_WuiMenuItem) {
         button.removeAllItems()
 
         // First item is the "title" shown when menu is closed
@@ -160,7 +154,7 @@ final class WuiMenu: PlatformView, WuiComponent {
         let labelText = extractLabelText()
         button.addItem(withTitle: labelText)
 
-        let menuItems = buildMenuItems()
+        let menuItems = buildMenuItems(array)
         for (index, item) in menuItems.enumerated() {
             button.addItem(withTitle: item.label)
             if let menuItem = button.item(at: index + 1) {
@@ -188,6 +182,19 @@ final class WuiMenu: PlatformView, WuiComponent {
         waterui_call_shared_action(actionPtr, env.inner)
     }
     #endif
+
+    private func startWatching() {
+        itemsWatcher = items.watch { [weak self] value, metadata in
+            guard let self else { return }
+            withPlatformAnimation(metadata) {
+                #if canImport(UIKit)
+                self.button.menu = self.buildUIMenu(value)
+                #elseif canImport(AppKit)
+                self.rebuildMenu(value)
+                #endif
+            }
+        }
+    }
 
     func layoutPriority() -> Int32 { 0 }
 
