@@ -435,14 +435,20 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
     /// The CAMetalLayer for GPU rendering
     private var metalLayer: CAMetalLayer!
 
-    /// Display link for frame sync (120fps capable)
-    #if canImport(UIKit)
-        private var displayLink: CADisplayLink?
-    #elseif canImport(AppKit)
-        private var displayLink: CVDisplayLink?
-        private var displayLinkUserInfo: UnsafeMutableRawPointer?
-        private var trackingArea: NSTrackingArea?
-    #endif
+	    /// Display link for frame sync (120fps capable)
+	    #if canImport(UIKit)
+	        private var displayLink: CADisplayLink?
+	    #elseif canImport(AppKit)
+	        private var displayLink: CVDisplayLink?
+	        private var displayLinkUserInfo: UnsafeMutableRawPointer?
+	        private var trackingArea: NSTrackingArea?
+	        private weak var observedWindow: NSWindow?
+	        private var windowObservers: [NSObjectProtocol] = []
+	    #endif
+
+	    #if canImport(UIKit)
+	        private var appObservers: [NSObjectProtocol] = []
+	    #endif
 
     /// Whether we've initialized the GPU resources
     private var isGpuInitialized = false
@@ -471,15 +477,40 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 
     // MARK: - Designated Init
 
-    init(stretchAxis: WuiStretchAxis, ffiSurface: CWaterUI.WuiGpuSurface) {
-        self.stretchAxis = stretchAxis
-        self.renderState = WuiGpuSurfaceRenderState(ffiSurface: ffiSurface)
+	    init(stretchAxis: WuiStretchAxis, ffiSurface: CWaterUI.WuiGpuSurface) {
+	        self.stretchAxis = stretchAxis
+	        self.renderState = WuiGpuSurfaceRenderState(ffiSurface: ffiSurface)
 
-        super.init(frame: .zero)
+	        super.init(frame: .zero)
 
-        setupMetalLayer()
-        setupPointerTracking()
-    }
+	        setupMetalLayer()
+	        setupPointerTracking()
+	        setupLifecycleObservers()
+	    }
+
+	    private func setupLifecycleObservers() {
+	        #if canImport(UIKit)
+	            let center = NotificationCenter.default
+	            appObservers.append(
+	                center.addObserver(
+	                    forName: UIApplication.willResignActiveNotification,
+	                    object: nil,
+	                    queue: .main
+	                ) { [weak self] _ in
+	                    self?.updateDisplayLinkState()
+	                }
+	            )
+	            appObservers.append(
+	                center.addObserver(
+	                    forName: UIApplication.didBecomeActiveNotification,
+	                    object: nil,
+	                    queue: .main
+	                ) { [weak self] _ in
+	                    self?.updateDisplayLinkState()
+	                }
+	            )
+	        #endif
+	    }
 
     // MARK: - Pointer Tracking Setup
 
@@ -645,30 +676,25 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
                 renderState.resetGestureState()
             }
         }
-    #elseif canImport(AppKit)
-        override func updateTrackingAreas() {
-            super.updateTrackingAreas()
-
-            // Remove old tracking area
-            if let oldArea = trackingArea {
-                removeTrackingArea(oldArea)
-            }
-
-            // Create new tracking area for mouse enter/exit and move
-            let options: NSTrackingArea.Options = [
-                .mouseEnteredAndExited,
-                .mouseMoved,
-                .activeInKeyWindow,
-                .inVisibleRect,
-            ]
-            trackingArea = NSTrackingArea(
-                rect: bounds,
-                options: options,
-                owner: self,
-                userInfo: nil
-            )
-            addTrackingArea(trackingArea!)
-        }
+	    #elseif canImport(AppKit)
+	        override func updateTrackingAreas() {
+	            super.updateTrackingAreas()
+	            guard trackingArea == nil else { return }
+	            let options: NSTrackingArea.Options = [
+	                .mouseEnteredAndExited,
+	                .mouseMoved,
+	                .activeInKeyWindow,
+	                .inVisibleRect,
+	            ]
+	            let area = NSTrackingArea(
+	                rect: .zero,
+	                options: options,
+	                owner: self,
+	                userInfo: nil
+	            )
+	            trackingArea = area
+	            addTrackingArea(area)
+	        }
 
         override func mouseEntered(with event: NSEvent) {
             super.mouseEntered(with: event)
@@ -793,13 +819,14 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             }
         }
 
-        // Double-click to reset zoom/pan
-        override func mouseDown(with event: NSEvent) {
-            super.mouseDown(with: event)
-            let location = convert(event.locationInWindow, from: nil)
-            pressOrigin = location
-            renderState.updatePointerPosition(location, scaleFactor: currentScaleFactor)
-            renderState.updatePointerHit(true, origin: location, scaleFactor: currentScaleFactor)
+	        // Double-click to reset zoom/pan
+	        override func mouseDown(with event: NSEvent) {
+	            window?.makeFirstResponder(self)
+	            super.mouseDown(with: event)
+	            let location = convert(event.locationInWindow, from: nil)
+	            pressOrigin = location
+	            renderState.updatePointerPosition(location, scaleFactor: currentScaleFactor)
+	            renderState.updatePointerHit(true, origin: location, scaleFactor: currentScaleFactor)
 
             // Check for double-click
             if event.clickCount == 2 {
@@ -887,19 +914,17 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         // Get pointer to metal layer for wgpu surface creation
         let layerPtr = Unmanaged.passUnretained(metalLayer).toOpaque()
 
-        guard !isGpuInitialized else { return }
-        renderState.initializeIfNeeded(layerPtr: layerPtr, width: width, height: height) {
-            [weak self] success in
-            guard let self else { return }
-            guard success else { return }
-            self.isGpuInitialized = true
-            if !self.externalRendering {
-                self.startDisplayLink()
-            }
-            // Trigger immediate first render to avoid empty frame on window open
-            self.renderFrame()
-        }
-    }
+	        guard !isGpuInitialized else { return }
+	        renderState.initializeIfNeeded(layerPtr: layerPtr, width: width, height: height) {
+	            [weak self] success in
+	            guard let self else { return }
+	            guard success else { return }
+	            self.isGpuInitialized = true
+	            self.updateDisplayLinkState()
+	            // Trigger immediate first render to avoid empty frame on window open
+	            self.renderFrame()
+	        }
+	    }
 
     // MARK: - Display Link
 
@@ -969,19 +994,48 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         }
     #endif
 
-    private func renderFrame() {
-        renderState.requestRender()
-    }
+	    private func renderFrame() {
+	        renderState.requestRender()
+	    }
 
-    func setExternalRendering(_ enabled: Bool) {
-        externalRendering = enabled
-        renderState.setExternalRendering(enabled)
-        if enabled {
-            stopDisplayLink()
-        } else if isGpuInitialized {
-            startDisplayLink()
-        }
-    }
+	    private func isEffectivelyVisible() -> Bool {
+	        #if canImport(UIKit)
+	            guard window != nil else { return false }
+	            guard !isHidden, alpha > 0 else { return false }
+	            return UIApplication.shared.applicationState == .active
+	        #elseif canImport(AppKit)
+	            guard let window else { return false }
+	            guard !isHidden, alphaValue > 0 else { return false }
+	            if window.isMiniaturized { return false }
+	            if !window.occlusionState.contains(.visible) { return false }
+	            return true
+	        #else
+	            return true
+	        #endif
+	    }
+
+	    private func updateDisplayLinkState() {
+	        guard isGpuInitialized else { return }
+	        if externalRendering {
+	            stopDisplayLink()
+	            return
+	        }
+	        if isEffectivelyVisible() {
+	            startDisplayLink()
+	        } else {
+	            stopDisplayLink()
+	        }
+	    }
+
+	    func setExternalRendering(_ enabled: Bool) {
+	        externalRendering = enabled
+	        renderState.setExternalRendering(enabled)
+	        if enabled {
+	            stopDisplayLink()
+	        } else if isGpuInitialized {
+	            updateDisplayLinkState()
+	        }
+	    }
 
     func clearExternalRendering() {
         setExternalRendering(false)
@@ -1059,28 +1113,29 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 
     // MARK: - Layout
 
-    #if canImport(UIKit)
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            updateMetalLayerFrame()
-            initializeGpuIfNeeded()
-        }
+	    #if canImport(UIKit)
+	        override func layoutSubviews() {
+	            super.layoutSubviews()
+	            updateMetalLayerFrame()
+	            initializeGpuIfNeeded()
+	            updateDisplayLinkState()
+	        }
 
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            if window != nil {
-                // Update scale factor when added to window
-                currentScaleFactor = contentScaleFactor
-                updateMetalLayerFrame()
-                initializeGpuIfNeeded()
-            }
-        }
-    #elseif canImport(AppKit)
-        override func layout() {
-            super.layout()
-            updateMetalLayerFrame()
-            initializeGpuIfNeeded()
-        }
+	        override func didMoveToWindow() {
+	            super.didMoveToWindow()
+	            // Update scale factor when added to window
+	            currentScaleFactor = contentScaleFactor
+	            updateMetalLayerFrame()
+	            initializeGpuIfNeeded()
+	            updateDisplayLinkState()
+	        }
+	    #elseif canImport(AppKit)
+	        override func layout() {
+	            super.layout()
+	            updateMetalLayerFrame()
+	            initializeGpuIfNeeded()
+	            updateDisplayLinkState()
+	        }
 
         override var isFlipped: Bool { true }
 
@@ -1089,29 +1144,40 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             set {}
         }
 
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            if window != nil {
-                // Update scale factor when added to window
-                currentScaleFactor = window?.backingScaleFactor ?? 1.0
-                updateMetalLayerFrame()
-                initializeGpuIfNeeded()
-            }
-        }
+	        override func viewDidMoveToWindow() {
+	            super.viewDidMoveToWindow()
+	            // Update scale factor when added to window
+	            currentScaleFactor = window?.backingScaleFactor ?? 1.0
+	            updateMetalLayerFrame()
+	            initializeGpuIfNeeded()
+	            updateWindowObservers()
+	            updateDisplayLinkState()
+	        }
 
-        override func viewDidChangeBackingProperties() {
-            super.viewDidChangeBackingProperties()
-            // Handle display change (e.g., moved to different monitor)
-            if let newScale = window?.backingScaleFactor, newScale != currentScaleFactor {
-                currentScaleFactor = newScale
-                updateMetalLayerFrame()
-                initializeGpuIfNeeded()
-            }
-        }
-    #endif
+	        override func viewDidChangeBackingProperties() {
+	            super.viewDidChangeBackingProperties()
+	            // Handle display change (e.g., moved to different monitor)
+	            if let newScale = window?.backingScaleFactor, newScale != currentScaleFactor {
+	                currentScaleFactor = newScale
+	                updateMetalLayerFrame()
+	                initializeGpuIfNeeded()
+	                updateDisplayLinkState()
+	            }
+	        }
 
-    private func updateMetalLayerFrame() {
-        guard metalLayer != nil else { return }
+	        override func viewDidHide() {
+	            super.viewDidHide()
+	            updateDisplayLinkState()
+	        }
+
+	        override func viewDidUnhide() {
+	            super.viewDidUnhide()
+	            updateDisplayLinkState()
+	        }
+	    #endif
+
+	    private func updateMetalLayerFrame() {
+	        guard metalLayer != nil else { return }
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -1125,15 +1191,89 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             metalLayer.drawableSize = CGSize(width: width, height: height)
         }
 
-        CATransaction.commit()
-    }
+	        CATransaction.commit()
+	    }
 
-    // MARK: - Cleanup
+	    #if canImport(AppKit)
+	        private func updateWindowObservers() {
+	            if observedWindow === window { return }
 
-    @MainActor deinit {
-        stopDisplayLink()
-        renderState.shutdown()
-    }
+	            let center = NotificationCenter.default
+	            for token in windowObservers {
+	                center.removeObserver(token)
+	            }
+	            windowObservers.removeAll()
+	            observedWindow = window
+
+	            guard let window else { return }
+
+	            windowObservers.append(
+	                center.addObserver(
+	                    forName: NSWindow.didChangeOcclusionStateNotification,
+	                    object: window,
+	                    queue: .main
+	                ) { [weak self] _ in
+	                    self?.updateDisplayLinkState()
+	                }
+	            )
+	            windowObservers.append(
+	                center.addObserver(
+	                    forName: NSWindow.didMiniaturizeNotification,
+	                    object: window,
+	                    queue: .main
+	                ) { [weak self] _ in
+	                    self?.updateDisplayLinkState()
+	                }
+	            )
+	            windowObservers.append(
+	                center.addObserver(
+	                    forName: NSWindow.didDeminiaturizeNotification,
+	                    object: window,
+	                    queue: .main
+	                ) { [weak self] _ in
+	                    self?.updateDisplayLinkState()
+	                }
+	            )
+	            windowObservers.append(
+	                center.addObserver(
+	                    forName: NSWindow.didBecomeKeyNotification,
+	                    object: window,
+	                    queue: .main
+	                ) { [weak self] _ in
+	                    self?.updateDisplayLinkState()
+	                }
+	            )
+	            windowObservers.append(
+	                center.addObserver(
+	                    forName: NSWindow.didResignKeyNotification,
+	                    object: window,
+	                    queue: .main
+	                ) { [weak self] _ in
+	                    self?.updateDisplayLinkState()
+	                }
+	            )
+	        }
+	    #endif
+
+	    // MARK: - Cleanup
+
+	    @MainActor deinit {
+	        stopDisplayLink()
+	        #if canImport(UIKit)
+	            let center = NotificationCenter.default
+	            for token in appObservers {
+	                center.removeObserver(token)
+	            }
+	            appObservers.removeAll()
+	        #elseif canImport(AppKit)
+	            let center = NotificationCenter.default
+	            for token in windowObservers {
+	                center.removeObserver(token)
+	            }
+	            windowObservers.removeAll()
+	        #endif
+	        renderState.shutdown()
+	    }
 }
 
 // MARK: - UIGestureRecognizerDelegate

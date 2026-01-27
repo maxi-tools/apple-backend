@@ -241,6 +241,7 @@ private func registerBuiltinComponentsIfNeeded() {
     registerMetadataComponent(WuiIgnoreSafeArea.self)
     registerMetadataComponent(WuiRetain.self)
     registerMetadataComponent(WuiContextMenu.self)
+    registerMetadataComponent(WuiHittable.self)
 
     // Material background (blur effect)
     registerMetadataComponent(WuiMaterialBackground.self)

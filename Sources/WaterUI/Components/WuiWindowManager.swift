@@ -218,6 +218,9 @@ final class WindowManagerImpl {
         // Track the window
         activeWindows.append(window)
 
+        // Ensure mouse move events are delivered for hover-driven interactions (e.g. GpuSurface pointer tracking)
+        window.acceptsMouseMovedEvents = true
+
         // Layout the content with autoresizing (before waiting for ready)
         contentView.frame = containerView.bounds
         contentView.autoresizingMask = [.width, .height]
