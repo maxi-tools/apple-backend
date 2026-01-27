@@ -51,7 +51,6 @@ private func getWindowTitle(_ titlePtr: OpaquePointer?) -> String {
     return WuiStr(ffiStr).toString()
 }
 
-@MainActor
 private final class WindowResources {
     var title: OpaquePointer?
     var titleWatcher: WatcherGuard?

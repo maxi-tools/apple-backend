@@ -216,16 +216,18 @@ final class WuiNavigationView: PlatformView, WuiComponent {
         // Position nav bar at top
         navBarView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: barHeight)
 
-        // Position back button on the left
-        if let backButton = backButton {
-            let buttonSize = backButton.sizeThatFits(CGSize(width: 100, height: barHeight))
-            backButton.frame = CGRect(
-                x: 12,
-                y: (barHeight - buttonSize.height) / 2,
-                width: buttonSize.width,
-                height: buttonSize.height
-            )
-        }
+        #if canImport(AppKit)
+            // Position back button on the left (macOS standalone NavigationView)
+            if let backButton = backButton {
+                let buttonSize = backButton.sizeThatFits(CGSize(width: 100, height: barHeight))
+                backButton.frame = CGRect(
+                    x: 12,
+                    y: (barHeight - buttonSize.height) / 2,
+                    width: buttonSize.width,
+                    height: buttonSize.height
+                )
+            }
+        #endif
 
         // Center title in nav bar
         let titleSize = titleView.sizeThatFits(WuiProposalSize(width: Float(bounds.width), height: Float(barHeight)))
@@ -237,9 +239,15 @@ final class WuiNavigationView: PlatformView, WuiComponent {
         )
 
         // Position border at bottom of nav bar
-        if let border = navBarView.subviews.last, border !== titleView && border !== backButton {
-            border.frame = CGRect(x: 0, y: barHeight - 1, width: bounds.width, height: 1)
-        }
+        #if canImport(AppKit)
+            if let border = navBarView.subviews.last, border !== titleView && border !== backButton {
+                border.frame = CGRect(x: 0, y: barHeight - 1, width: bounds.width, height: 1)
+            }
+        #else
+            if let border = navBarView.subviews.last, border !== titleView {
+                border.frame = CGRect(x: 0, y: barHeight - 1, width: bounds.width, height: 1)
+            }
+        #endif
 
         // Position content below nav bar
         let contentY = barHeight

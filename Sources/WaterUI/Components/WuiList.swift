@@ -187,12 +187,18 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
         }
 
         performBatchUpdates {
-            let deletions = diff.removals.map { IndexPath(row: $0.offset, section: 0) }.sorted {
-                $0.row > $1.row
-            }
-            let insertions = diff.insertions.map { IndexPath(row: $0.offset, section: 0) }.sorted {
-                $0.row < $1.row
-            }
+            let deletions: [IndexPath] = diff.removals
+                .compactMap { (change) -> IndexPath? in
+                    guard case let .remove(offset, _, _) = change else { return nil }
+                    return IndexPath(row: offset, section: 0)
+                }
+                .sorted { (lhs, rhs) in lhs.row > rhs.row }
+            let insertions: [IndexPath] = diff.insertions
+                .compactMap { (change) -> IndexPath? in
+                    guard case let .insert(offset, _, _) = change else { return nil }
+                    return IndexPath(row: offset, section: 0)
+                }
+                .sorted { (lhs, rhs) in lhs.row < rhs.row }
 
             if !deletions.isEmpty { deleteRows(at: deletions, with: .automatic) }
             if !insertions.isEmpty { insertRows(at: insertions, with: .automatic) }
@@ -545,8 +551,18 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
         }
 
         tableView.beginUpdates()
-        let deletions = diff.removals.map(\.offset).sorted(by: >)
-        let insertions = diff.insertions.map(\.offset).sorted(by: <)
+        let deletions = diff.removals
+            .compactMap { change in
+                guard case let .remove(offset, _, _) = change else { return nil }
+                return offset
+            }
+            .sorted(by: >)
+        let insertions = diff.insertions
+            .compactMap { change in
+                guard case let .insert(offset, _, _) = change else { return nil }
+                return offset
+            }
+            .sorted(by: <)
         if !deletions.isEmpty {
             tableView.removeRows(at: IndexSet(deletions), withAnimation: .slideUp)
         }

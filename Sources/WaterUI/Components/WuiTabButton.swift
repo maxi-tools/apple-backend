@@ -12,7 +12,7 @@ final class WuiTabButton: UIControl {
     private let labelView: WuiAnyView
     var onTap: (() -> Void)?
 
-    var isSelected: Bool = false {
+    override var isSelected: Bool {
         didSet { updateAppearance() }
     }
 
@@ -106,7 +106,7 @@ final class WuiTabButton: NSView {
         labelView.frame = bounds.insetBy(dx: inset, dy: 6)
     }
 
-    override func sizeThatFits(_ size: NSSize) -> NSSize {
+    func sizeThatFits(_ size: NSSize) -> NSSize {
         let labelSize = labelView.sizeThatFits(WuiProposalSize(width: Float(size.width), height: Float(size.height)))
         return NSSize(width: labelSize.width + 16, height: max(labelSize.height + 12, 28))
     }

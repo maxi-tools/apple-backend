@@ -831,7 +831,11 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         metalLayer.framebufferOnly = false  // Allow texture readback for preview capture
         metalLayer.maximumDrawableCount = 3  // Triple buffering for smooth 120fps
         metalLayer.isOpaque = false  // Allow transparency for compositing with background
-        metalLayer.backgroundColor = CGColor.clear  // Ensure no black background
+        #if canImport(UIKit)
+            metalLayer.backgroundColor = UIColor.clear.cgColor  // Ensure no black background
+        #elseif canImport(AppKit)
+            metalLayer.backgroundColor = NSColor.clear.cgColor  // Ensure no black background
+        #endif
 
         // Configure HDR support if available
         configureHDR()
@@ -845,7 +849,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             if self.layer == nil {
                 self.layer = CALayer()
             }
-            self.layer?.backgroundColor = CGColor.clear
+            self.layer?.backgroundColor = NSColor.clear.cgColor
             self.layer?.addSublayer(metalLayer)
         #endif
     }

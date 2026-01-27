@@ -196,7 +196,7 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
         guard let requestId, let payloadB64 else { return }
 
         let replyCtx = Unmanaged.passRetained(MessageReplyContext(wrapper: self, requestId: requestId)).toOpaque()
-        let reply = CWaterUI.WuiJsCallback(data: replyCtx, call: messageReplyCallback)
+        let reply = CWaterUI.WuiJsCallback(data: replyCtx, call: Self.messageReplyCallback)
         let msg = CWaterUI.WuiWebViewMessage(
             payload_base64: WuiStr(string: payloadB64).intoInner(),
             reply: reply
@@ -562,12 +562,14 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
     }
 
     deinit {
-        for (_, cb) in messageHandlers {
-            cb.drop?(cb.data)
-        }
-        messageHandlers.removeAll()
-        if let cb = eventCallback {
-            cb.drop?(cb.data)
+        MainActor.assumeIsolated {
+            for (_, cb) in messageHandlers {
+                cb.drop?(cb.data)
+            }
+            messageHandlers.removeAll()
+            if let cb = eventCallback {
+                cb.drop?(cb.data)
+            }
         }
     }
 }

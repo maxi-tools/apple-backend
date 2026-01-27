@@ -349,7 +349,11 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         outputLayer.framebufferOnly = true
         outputLayer.maximumDrawableCount = 3
         outputLayer.isOpaque = false
-        outputLayer.backgroundColor = CGColor.clear
+        #if canImport(UIKit)
+            outputLayer.backgroundColor = UIColor.clear.cgColor
+        #elseif canImport(AppKit)
+            outputLayer.backgroundColor = NSColor.clear.cgColor
+        #endif
         outputLayer.zPosition = 1
         outputLayer.pixelFormat = .rgba16Float
         outputLayer.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
@@ -361,7 +365,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
             if self.layer == nil {
                 self.layer = CALayer()
             }
-            self.layer?.backgroundColor = CGColor.clear
+            self.layer?.backgroundColor = NSColor.clear.cgColor
             self.layer?.addSublayer(outputLayer)
         #endif
     }

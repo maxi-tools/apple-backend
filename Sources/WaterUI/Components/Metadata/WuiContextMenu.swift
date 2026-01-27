@@ -31,7 +31,9 @@ final class WuiContextMenu: PlatformView, WuiComponent {
         guard let itemsPtr = metadata.value.items else {
             fatalError("ContextMenu.items is null")
         }
-        self.items = WuiComputed<CWaterUI.WuiArray_WuiMenuItem>(OpaquePointer(itemsPtr))
+        self.items = WuiComputed<CWaterUI.WuiArray_WuiMenuItem>(
+            OpaquePointer(UnsafeMutableRawPointer(itemsPtr))
+        )
 
         // Resolve the content
         self.contentView = WuiAnyView.resolve(anyview: metadata.content, env: env)

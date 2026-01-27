@@ -48,7 +48,10 @@ private func wuiLinearComponents(_ color: WuiResolvedColor) -> (Float, Float, Fl
 
 #if canImport(UIKit)
 private func wuiSupportsExtendedRange() -> Bool {
-    UIScreen.main.maximumExtendedDynamicRangeColorComponentValue > 1.0
+    if #available(iOS 26.0, tvOS 26.0, visionOS 26.0, watchOS 26.0, macCatalyst 26.0, *) {
+        return true
+    }
+    return false
 }
 #elseif canImport(AppKit)
 private func wuiSupportsExtendedRange() -> Bool {
@@ -81,20 +84,44 @@ class WuiColor {
 #if canImport(UIKit)
 extension WuiResolvedColor {
     func toUIColor(allowHdr: Bool = true) -> UIColor {
-        let base = (self.red, self.green, self.blue)
         let alpha = wuiClampUnit(self.opacity)
 
         if allowHdr,
            wuiSupportsExtendedRange(),
-           self.headroom > 0.0,
-           #available(iOS 26.0, tvOS 26.0, visionOS 26.0, watchOS 26.0, macCatalyst 26.0, *),
-           let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB),
-            let cgColor = CGColor(
-               colorSpace: colorSpace,
-               components: [CGFloat(base.0), CGFloat(base.1), CGFloat(base.2), CGFloat(alpha)]
-           ) {
-            return UIColor(cgColor: cgColor)
-                .applyingContentHeadroom(max(1.0, 1.0 + CGFloat(self.headroom)))
+           #available(iOS 26.0, tvOS 26.0, visionOS 26.0, watchOS 26.0, macCatalyst 26.0, *) {
+            let exposure = max(1.0, 1.0 + CGFloat(self.headroom))
+
+            // UIColor's HDR initializer expects SDR (nominal [0..1]) components. Our resolved color is stored
+            // in linear space, so convert to sRGB before constructing the base SDR color.
+            var r = wuiLinearToSrgb(self.red)
+            var g = wuiLinearToSrgb(self.green)
+            var b = wuiLinearToSrgb(self.blue)
+
+            // If upstream provides linear components outside [0..1], normalize into the exposure to keep
+            // the base SDR color in-range while preserving the intended output.
+            let maxLinear = max(self.red, self.green, self.blue)
+            if maxLinear > 1.0 {
+                let mergedExposure = max(exposure, CGFloat(maxLinear))
+                let inv = 1.0 / Float(mergedExposure)
+                r = wuiLinearToSrgb(self.red * inv)
+                g = wuiLinearToSrgb(self.green * inv)
+                b = wuiLinearToSrgb(self.blue * inv)
+                return UIColor(
+                    red: CGFloat(wuiClampUnit(r)),
+                    green: CGFloat(wuiClampUnit(g)),
+                    blue: CGFloat(wuiClampUnit(b)),
+                    alpha: CGFloat(alpha),
+                    linearExposure: mergedExposure
+                )
+            }
+
+            return UIColor(
+                red: CGFloat(wuiClampUnit(r)),
+                green: CGFloat(wuiClampUnit(g)),
+                blue: CGFloat(wuiClampUnit(b)),
+                alpha: CGFloat(alpha),
+                linearExposure: exposure
+            )
         }
 
         let (r, g, b, a) = wuiLinearComponents(self)

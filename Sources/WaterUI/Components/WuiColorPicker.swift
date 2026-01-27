@@ -172,8 +172,7 @@ final class WuiColorPicker: PlatformView, WuiComponent {
                 headroom = max(0.0, exposure - 1.0)
             }
         }
-        let srgb = baseColor.usingColorSpace(.extendedSRGB) ?? baseColor
-        guard srgb.getRed(&r, green: &g, blue: &b, alpha: &a) else { return }
+        guard baseColor.getRed(&r, green: &g, blue: &b, alpha: &a) else { return }
 
         let linearR = wuiSrgbToLinear(Float(r))
         let linearG = wuiSrgbToLinear(Float(g))

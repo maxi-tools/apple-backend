@@ -299,10 +299,6 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
 #endif
 }
 
-#if canImport(UIKit)
-extension WuiNavigationStack: UINavigationControllerDelegate {}
-#endif
-
     // MARK: - Push/Pop Handlers
 
     func handlePush(_ navView: CWaterUI.WuiNavigationView) {
@@ -460,7 +456,7 @@ extension WuiNavigationStack: UINavigationControllerDelegate {}
         }
 
         let accessory = NSTitlebarAccessoryViewController()
-        accessory.layoutAttribute = .center
+        accessory.layoutAttribute = .centerX
         window.addTitlebarAccessoryViewController(accessory)
         titleAccessory = accessory
         return accessory
@@ -544,3 +540,7 @@ extension WuiNavigationStack: UINavigationControllerDelegate {}
     }
     #endif
 }
+
+#if canImport(UIKit)
+extension WuiNavigationStack: UINavigationControllerDelegate {}
+#endif

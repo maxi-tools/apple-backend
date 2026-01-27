@@ -36,7 +36,9 @@ final class WuiMenu: PlatformView, WuiComponent {
         guard let itemsPtr = menu.items else {
             fatalError("WuiMenu.items is null")
         }
-        self.items = WuiComputed<CWaterUI.WuiArray_WuiMenuItem>(OpaquePointer(itemsPtr))
+        self.items = WuiComputed<CWaterUI.WuiArray_WuiMenuItem>(
+            OpaquePointer(UnsafeMutableRawPointer(itemsPtr))
+        )
 
         // Resolve the label view
         self.labelView = WuiAnyView.resolve(anyview: menu.label, env: env)

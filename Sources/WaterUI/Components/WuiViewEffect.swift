@@ -319,7 +319,11 @@ final class WuiViewEffect: PlatformView, WuiComponent {
         outputLayer.framebufferOnly = true
         outputLayer.maximumDrawableCount = 3
         outputLayer.isOpaque = false
-        outputLayer.backgroundColor = CGColor.clear
+        #if canImport(UIKit)
+            outputLayer.backgroundColor = UIColor.clear.cgColor
+        #elseif canImport(AppKit)
+            outputLayer.backgroundColor = NSColor.clear.cgColor
+        #endif
 
         // Configure HDR
         outputLayer.pixelFormat = .rgba16Float
@@ -333,7 +337,7 @@ final class WuiViewEffect: PlatformView, WuiComponent {
             if self.layer == nil {
                 self.layer = CALayer()
             }
-            self.layer?.backgroundColor = CGColor.clear
+            self.layer?.backgroundColor = NSColor.clear.cgColor
             self.layer?.addSublayer(outputLayer)
         #endif
     }
