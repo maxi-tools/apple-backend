@@ -2,13 +2,14 @@
 // Scroll view component - merged UIKit and AppKit implementation
 //
 // # Layout Behavior
-// ScrollView is greedy - it expands to fill all available space in both directions.
+// ScrollView fills available space when proposed, but reports 0 size when unconstrained.
+// This prevents ScrollView from forcing window/parent expansion.
 // Content can exceed scroll view bounds and becomes scrollable.
 // Scroll direction is configured via axis parameter.
 //
 // // INTERNAL: Layout Contract for Backend Implementers
 // // - stretchAxis: .both (greedy, fills all available space)
-// // - sizeThatFits: Returns proposed size or screen size if unspecified
+// // - sizeThatFits: Returns proposed size, or 0 if unspecified (no preferred size)
 // // - Priority: 0 (default)
 
 import CWaterUI
@@ -75,9 +76,11 @@ final class WuiScroll: UIScrollView, WuiComponent, UIScrollViewDelegate {
     // MARK: - WuiComponent
 
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
-        // ScrollView takes all proposed space, or screen size if unspecified
-        let width = proposal.width.map { CGFloat($0) } ?? UIScreen.main.bounds.width
-        let height = proposal.height.map { CGFloat($0) } ?? UIScreen.main.bounds.height
+        // ScrollView takes all proposed space, or 0 if unspecified
+        // Returning 0 when unconstrained allows parent to determine size
+        // instead of ScrollView forcing screen-sized expansion
+        let width = proposal.width.map { CGFloat($0) } ?? 0
+        let height = proposal.height.map { CGFloat($0) } ?? 0
         return CGSize(width: width, height: height)
     }
 
@@ -188,10 +191,11 @@ final class WuiScroll: NSScrollView, WuiComponent {
     // MARK: - WuiComponent
 
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        let screenSize = screen?.frame.size ?? CGSize(width: 800, height: 600)
-        let width = proposal.width.map { CGFloat($0) } ?? screenSize.width
-        let height = proposal.height.map { CGFloat($0) } ?? screenSize.height
+        // ScrollView takes all proposed space, or 0 if unspecified
+        // Returning 0 when unconstrained allows parent to determine size
+        // instead of ScrollView forcing screen-sized expansion
+        let width = proposal.width.map { CGFloat($0) } ?? 0
+        let height = proposal.height.map { CGFloat($0) } ?? 0
         return CGSize(width: width, height: height)
     }
 
