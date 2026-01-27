@@ -13,6 +13,7 @@
 // Configures CAMetalLayer for HDR when available using extended sRGB color space.
 
 import CWaterUI
+import Foundation
 import Metal
 import OSLog
 import QuartzCore
@@ -31,6 +32,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     private var isActive = true
     private var renderInFlight = false
     private var externalRendering = false
+    private var needsRender = true
     private var width: UInt32 = 0
     private var height: UInt32 = 0
 
@@ -71,6 +73,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     /// Update pointer position (in surface-local pixel coordinates).
     func updatePointerPosition(_ position: CGPoint?, scaleFactor: CGFloat) {
         lock.lock()
+        needsRender = true
         if let pos = position {
             pointerState.has_position = true
             pointerState.x = Float(pos.x * scaleFactor)
@@ -84,6 +87,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     /// Update pointer hit state.
     func updatePointerHit(_ hit: Bool, origin: CGPoint?, scaleFactor: CGFloat) {
         lock.lock()
+        needsRender = true
         if hit, let origin = origin {
             pointerState.has_hit = true
             pointerState.hit_x = Float(origin.x * scaleFactor)
@@ -97,6 +101,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     /// Update gesture state for pinch zoom.
     func updatePinchGesture(active: Bool, scale: CGFloat, center: CGPoint?, scaleFactor: CGFloat) {
         lock.lock()
+        needsRender = true
         gestureState.active = active
         gestureState.pinch_scale = Float(scale)
         if let center = center {
@@ -112,6 +117,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     /// Update gesture state for pan.
     func updatePanGesture(active: Bool, offsetX: CGFloat, offsetY: CGFloat, scaleFactor: CGFloat) {
         lock.lock()
+        needsRender = true
         gestureState.active = active
         gestureState.pan_offset_x = Float(offsetX * scaleFactor)
         gestureState.pan_offset_y = Float(offsetY * scaleFactor)
@@ -121,6 +127,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     /// Signal a double-tap gesture.
     func triggerDoubleTap() {
         lock.lock()
+        needsRender = true
         gestureState.double_tap = true
         lock.unlock()
     }
@@ -133,6 +140,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     /// Reset gesture state when gesture ends.
     func resetGestureState() {
         lock.lock()
+        needsRender = true
         gestureState.active = false
         gestureState.pinch_scale = 1.0
         gestureState.has_pinch_center = false
@@ -157,6 +165,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
 
     func updateSize(width: UInt32, height: UInt32) {
         lock.lock()
+        needsRender = true
         self.width = width
         self.height = height
         lock.unlock()
@@ -219,11 +228,18 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         }
     }
 
-    func requestRender() {
+    func requestRender(force: Bool = false) {
         lock.lock()
         if !isActive || externalRendering {
             lock.unlock()
             return
+        }
+
+        if !force {
+            guard needsRender else {
+                lock.unlock()
+                return
+            }
         }
 
         guard let state = gpuState, width > 0, height > 0, !renderInFlight else {
@@ -232,6 +248,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         }
 
         renderInFlight = true
+        needsRender = false
         let width = self.width
         let height = self.height
         lock.unlock()
@@ -428,6 +445,13 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
 final class WuiGpuSurface: PlatformView, WuiComponent {
     static var rawId: CWaterUI.WuiTypeId { waterui_gpu_surface_id() }
 
+    private static let continuousRenderingEnabled: Bool = {
+        let raw = ProcessInfo.processInfo.environment["WATERUI_GPU_SURFACE_CONTINUOUS"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return raw == "1" || raw == "true" || raw == "yes"
+    }()
+
     private(set) var stretchAxis: WuiStretchAxis = .both
 
     private nonisolated(unsafe) let renderState: WuiGpuSurfaceRenderState
@@ -562,8 +586,10 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             case .began, .changed:
                 let location = gesture.location(in: self)
                 renderState.updatePointerPosition(location, scaleFactor: currentScaleFactor)
+                renderFrame()
             case .ended, .cancelled:
                 renderState.updatePointerPosition(nil, scaleFactor: currentScaleFactor)
+                renderFrame()
             default:
                 break
             }
@@ -576,6 +602,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
                 pressOrigin = location
                 renderState.updatePointerPosition(location, scaleFactor: currentScaleFactor)
                 renderState.updatePointerHit(true, origin: location, scaleFactor: currentScaleFactor)
+                renderFrame()
             }
         }
 
@@ -584,6 +611,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             if let touch = touches.first {
                 let location = touch.location(in: self)
                 renderState.updatePointerPosition(location, scaleFactor: currentScaleFactor)
+                renderFrame()
             }
         }
 
@@ -591,12 +619,14 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             super.touchesEnded(touches, with: event)
             renderState.updatePointerHit(false, origin: nil, scaleFactor: currentScaleFactor)
             pressOrigin = nil
+            renderFrame()
         }
 
         override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
             super.touchesCancelled(touches, with: event)
             renderState.updatePointerHit(false, origin: nil, scaleFactor: currentScaleFactor)
             pressOrigin = nil
+            renderFrame()
         }
 
         // MARK: - Gesture Handlers (iOS)
@@ -632,6 +662,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             default:
                 break
             }
+            renderFrame()
         }
 
         @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
@@ -665,6 +696,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             default:
                 break
             }
+            renderFrame()
         }
 
         @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
@@ -674,9 +706,10 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
                 gesturePanOffset = .zero
                 renderState.triggerDoubleTap()
                 renderState.resetGestureState()
+                renderFrame()
             }
         }
-	    #elseif canImport(AppKit)
+    #elseif canImport(AppKit)
 	        override func updateTrackingAreas() {
 	            super.updateTrackingAreas()
 	            guard trackingArea == nil else { return }
@@ -700,29 +733,34 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             super.mouseEntered(with: event)
             let location = convert(event.locationInWindow, from: nil)
             renderState.updatePointerPosition(location, scaleFactor: currentScaleFactor)
+            renderFrame()
         }
 
         override func mouseMoved(with event: NSEvent) {
             super.mouseMoved(with: event)
             let location = convert(event.locationInWindow, from: nil)
             renderState.updatePointerPosition(location, scaleFactor: currentScaleFactor)
+            renderFrame()
         }
 
         override func mouseExited(with event: NSEvent) {
             super.mouseExited(with: event)
             renderState.updatePointerPosition(nil, scaleFactor: currentScaleFactor)
+            renderFrame()
         }
 
         override func mouseDragged(with event: NSEvent) {
             super.mouseDragged(with: event)
             let location = convert(event.locationInWindow, from: nil)
             renderState.updatePointerPosition(location, scaleFactor: currentScaleFactor)
+            renderFrame()
         }
 
         override func mouseUp(with event: NSEvent) {
             super.mouseUp(with: event)
             renderState.updatePointerHit(false, origin: nil, scaleFactor: currentScaleFactor)
             pressOrigin = nil
+            renderFrame()
         }
 
         override var acceptsFirstResponder: Bool { true }
@@ -760,6 +798,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             default:
                 break
             }
+            renderFrame()
         }
 
         override func scrollWheel(with event: NSEvent) {
@@ -817,16 +856,18 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
                     )
                 }
             }
+            renderFrame()
         }
 
 	        // Double-click to reset zoom/pan
-	        override func mouseDown(with event: NSEvent) {
-	            window?.makeFirstResponder(self)
-	            super.mouseDown(with: event)
-	            let location = convert(event.locationInWindow, from: nil)
-	            pressOrigin = location
-	            renderState.updatePointerPosition(location, scaleFactor: currentScaleFactor)
-	            renderState.updatePointerHit(true, origin: location, scaleFactor: currentScaleFactor)
+        override func mouseDown(with event: NSEvent) {
+            window?.makeFirstResponder(self)
+            super.mouseDown(with: event)
+            let location = convert(event.locationInWindow, from: nil)
+            pressOrigin = location
+            renderState.updatePointerPosition(location, scaleFactor: currentScaleFactor)
+            renderState.updatePointerHit(true, origin: location, scaleFactor: currentScaleFactor)
+            renderFrame()
 
             // Check for double-click
             if event.clickCount == 2 {
@@ -834,6 +875,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
                 gesturePanOffset = .zero
                 renderState.triggerDoubleTap()
                 renderState.resetGestureState()
+                renderFrame()
             }
         }
     #endif
@@ -951,7 +993,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         }
 
         @objc private func render() {
-            renderFrame()
+            renderFrame(force: true)
         }
     #elseif canImport(AppKit)
         private func startDisplayLink() {
@@ -972,7 +1014,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
                     guard let userInfo else { return kCVReturnError }
                     let state = Unmanaged<WuiGpuSurfaceRenderState>.fromOpaque(userInfo)
                         .takeUnretainedValue()
-                    state.requestRender()
+                    state.requestRender(force: true)
                     return kCVReturnSuccess
                 },
                 userInfo
@@ -994,9 +1036,9 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         }
     #endif
 
-	    private func renderFrame() {
-	        renderState.requestRender()
-	    }
+    private func renderFrame(force: Bool = false) {
+        renderState.requestRender(force: force)
+    }
 
 	    private func isEffectivelyVisible() -> Bool {
 	        #if canImport(UIKit)
@@ -1014,18 +1056,22 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 	        #endif
 	    }
 
-	    private func updateDisplayLinkState() {
-	        guard isGpuInitialized else { return }
-	        if externalRendering {
-	            stopDisplayLink()
-	            return
-	        }
-	        if isEffectivelyVisible() {
-	            startDisplayLink()
-	        } else {
-	            stopDisplayLink()
-	        }
-	    }
+    private func updateDisplayLinkState() {
+        guard isGpuInitialized else { return }
+        guard Self.continuousRenderingEnabled else {
+            stopDisplayLink()
+            return
+        }
+        if externalRendering {
+            stopDisplayLink()
+            return
+        }
+        if isEffectivelyVisible() {
+            startDisplayLink()
+        } else {
+            stopDisplayLink()
+        }
+    }
 
 	    func setExternalRendering(_ enabled: Bool) {
 	        externalRendering = enabled
@@ -1176,8 +1222,8 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 	        }
 	    #endif
 
-	    private func updateMetalLayerFrame() {
-	        guard metalLayer != nil else { return }
+    private func updateMetalLayerFrame() {
+        guard metalLayer != nil else { return }
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -1185,14 +1231,8 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         metalLayer.frame = bounds
         metalLayer.contentsScale = currentScaleFactor
 
-        let width = bounds.width * currentScaleFactor
-        let height = bounds.height * currentScaleFactor
-        if width > 0 && height > 0 {
-            metalLayer.drawableSize = CGSize(width: width, height: height)
-        }
-
-	        CATransaction.commit()
-	    }
+        CATransaction.commit()
+    }
 
 	    #if canImport(AppKit)
 	        private func updateWindowObservers() {

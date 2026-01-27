@@ -42,7 +42,7 @@ final class WuiCursor: PlatformView, WuiComponent {
         setupWatcher(metadata.value)
 
         #if canImport(AppKit)
-        setupTrackingArea()
+        setupTrackingAreaIfNeeded()
         #endif
     }
 
@@ -70,14 +70,16 @@ final class WuiCursor: PlatformView, WuiComponent {
     }
 
     #if canImport(AppKit)
-    private func setupTrackingArea() {
+    private func setupTrackingAreaIfNeeded() {
+        guard trackingArea == nil else { return }
         let options: NSTrackingArea.Options = [
             .mouseEnteredAndExited,
+            .cursorUpdate,
             .activeInKeyWindow,
             .inVisibleRect
         ]
         trackingArea = NSTrackingArea(
-            rect: bounds,
+            rect: .zero,
             options: options,
             owner: self,
             userInfo: nil
@@ -89,24 +91,26 @@ final class WuiCursor: PlatformView, WuiComponent {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-
-        if let oldTrackingArea = trackingArea {
-            removeTrackingArea(oldTrackingArea)
-        }
-
-        setupTrackingArea()
+        setupTrackingAreaIfNeeded()
     }
 
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
+        guard !isMouseInside else { return }
         isMouseInside = true
         applyCursor()
     }
 
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
+        guard isMouseInside else { return }
         isMouseInside = false
         NSCursor.arrow.set()
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        super.cursorUpdate(with: event)
+        applyCursor()
     }
 
     private func applyCursor() {

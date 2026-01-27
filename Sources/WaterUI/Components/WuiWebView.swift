@@ -478,7 +478,11 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
             set_redirects_enabled: { rawPtr, enabled in
                 guard let rawPtr = rawPtr else { return }
                 let wrapper = Unmanaged<WebViewWrapper>.fromOpaque(rawPtr).takeUnretainedValue()
-                Task { @MainActor in wrapper.setRedirectsEnabled(enabled) }
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { wrapper.setRedirectsEnabled(enabled) }
+                } else {
+                    DispatchQueue.main.sync { wrapper.setRedirectsEnabled(enabled) }
+                }
             },
             inject_script: { rawPtr, script, time in
                 guard let rawPtr = rawPtr else {
@@ -660,6 +664,35 @@ extension WebViewWrapper: WKNavigationDelegate {
             emitWillNavigate(urlStr, allowRepeat: false)
             emitLoading(0)
             emitStateChanged()
+        }
+    }
+
+    nonisolated func webView(
+        _ webView: WKWebView,
+        didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!
+    ) {
+        Task { @MainActor in
+            let toUrl = webView.url?.absoluteString ?? ""
+            let fromUrl = lastNavigationUrl ?? ""
+
+            if !redirectsEnabled {
+                let event = CWaterUI.WuiWebViewEvent(
+                    event_type: WuiWebViewEventType_Redirect,
+                    url: WuiStr(string: fromUrl).intoInner(),
+                    url2: WuiStr(string: toUrl).intoInner(),
+                    message: WuiStr(string: "").intoInner(),
+                    progress: 0,
+                    can_go_back: false,
+                    can_go_forward: false
+                )
+                emitEvent(event)
+                webView.stopLoading()
+                return
+            }
+
+            // Update navigation URL to the redirected destination
+            lastNavigationUrl = toUrl
+            emitWillNavigate(toUrl, allowRepeat: true)
         }
     }
 
