@@ -93,6 +93,8 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
 
         // Capture completion for later use in callback
         let completionCopy = completion
+        let filterAddr = Int(bitPattern: filter)
+        let layerAddr = Int(bitPattern: layerPtr)
 
         renderQueue.async { [weak self] in
             guard let self else {
@@ -101,7 +103,17 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
             }
 
             // Step 1: Sync init
-            let state = waterui_applied_filter_init(filter, layerPtr, width, height)
+            guard let filterPtr = UnsafeMutablePointer<WuiAppliedFilter_Struct>(bitPattern: filterAddr),
+                let layerPtr = UnsafeMutableRawPointer(bitPattern: layerAddr)
+            else {
+                self.lock.lock()
+                self.isInitializing = false
+                self.lock.unlock()
+                DispatchQueue.main.async { completionCopy(false) }
+                return
+            }
+
+            let state = waterui_applied_filter_init(filterPtr, layerPtr, width, height)
 
             self.lock.lock()
             guard self.isActive else {
@@ -132,7 +144,7 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         }
     }
 
-    func requestRender(preRender: ((OpaquePointer, UInt32, UInt32) -> Void)? = nil) {
+    func requestRender() {
         lock.lock()
         if !isActive || !isSetup {
             lock.unlock()
@@ -145,14 +157,26 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         }
 
         renderInFlight = true
+        let stateAddr = Int(bitPattern: state)
         let width = self.width
         let height = self.height
-        let storedPreRender = self.preRender
         lock.unlock()
 
         renderQueue.async { [weak self] in
             guard let self else { return }
-            let renderHook = preRender ?? storedPreRender
+
+            guard let state = OpaquePointer(bitPattern: stateAddr) else {
+                self.lock.lock()
+                self.renderInFlight = false
+                self.lock.unlock()
+                return
+            }
+
+            let renderHook: ((OpaquePointer, UInt32, UInt32) -> Void)?
+            self.lock.lock()
+            renderHook = self.preRender
+            self.lock.unlock()
+
             if let renderHook {
                 renderHook(state, width, height)
             }
@@ -304,8 +328,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
     #if canImport(UIKit)
         private var displayLink: CADisplayLink?
     #elseif canImport(AppKit)
-        private var displayLink: CVDisplayLink?
-        private var displayLinkUserInfo: UnsafeMutableRawPointer?
+        private var displayLink: CADisplayLink?
     #endif
 
     var stretchAxis: WuiStretchAxis {
@@ -526,9 +549,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         }
 
         for subview in view.subviews {
-            if let platformView = subview as? PlatformView {
-                updateLayerTree(platformView, scale: scale)
-            }
+            updateLayerTree(subview, scale: scale)
         }
     }
 
@@ -537,9 +558,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
             view.wantsLayer = true
         }
         for subview in view.subviews {
-            if let platformView = subview as? PlatformView {
-                ensureLayerBacked(platformView)
-            }
+            ensureLayerBacked(subview)
         }
     }
     #endif
@@ -550,7 +569,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         }
 
         if isMetadataComponent(component) {
-            if let contentSubview = view.subviews.first(where: { $0 is WuiComponent }) as? PlatformView {
+            if let contentSubview = view.subviews.first(where: { $0 is WuiComponent }) {
                 return resolveCaptureLayer(from: contentSubview)
             }
         }
@@ -625,8 +644,8 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         }
 
         for subview in view.subviews {
-            if let platformView = subview as? PlatformView, platformView is WuiComponent {
-                collectGpuSurfaceSnapshots(from: platformView, into: &snapshots)
+            if subview is WuiComponent {
+                collectGpuSurfaceSnapshots(from: subview, into: &snapshots)
             }
         }
     }
@@ -656,8 +675,8 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         }
 
         for subview in view.subviews {
-            if let platformView = subview as? PlatformView, platformView is WuiComponent {
-                collectGpuSurfaces(in: platformView, into: &surfaces)
+            if subview is WuiComponent {
+                collectGpuSurfaces(in: subview, into: &surfaces)
             }
         }
     }
@@ -1047,41 +1066,25 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
     #elseif canImport(AppKit)
         private func startDisplayLink() {
             guard displayLink == nil else { return }
-
-            var link: CVDisplayLink?
-            let status = CVDisplayLinkCreateWithActiveCGDisplays(&link)
-            guard status == kCVReturnSuccess, let link else { return }
-
+            let link: CADisplayLink
+            if let window {
+                link = window.displayLink(target: self, selector: #selector(render))
+            } else if let screen = NSScreen.main {
+                link = screen.displayLink(target: self, selector: #selector(render))
+            } else {
+                return
+            }
+            link.add(to: .main, forMode: .common)
             displayLink = link
-
-            let userInfo = Unmanaged.passRetained(renderState).toOpaque()
-            displayLinkUserInfo = userInfo
-
-            CVDisplayLinkSetOutputCallback(
-                link,
-                { _, _, _, _, _, userInfo -> CVReturn in
-                    guard let userInfo else { return kCVReturnError }
-                    let state = Unmanaged<WuiAppliedFilterRenderState>.fromOpaque(userInfo)
-                        .takeUnretainedValue()
-                    state.requestRender()
-                    return kCVReturnSuccess
-                },
-                userInfo
-            )
-
-            CVDisplayLinkStart(link)
         }
 
         private func stopDisplayLink() {
-            if let link = displayLink {
-                CVDisplayLinkStop(link)
-                displayLink = nil
-            }
+            displayLink?.invalidate()
+            displayLink = nil
+        }
 
-            if let userInfo = displayLinkUserInfo {
-                Unmanaged<WuiAppliedFilterRenderState>.fromOpaque(userInfo).release()
-                displayLinkUserInfo = nil
-            }
+        @objc private func render() {
+            renderFrame()
         }
     #endif
 

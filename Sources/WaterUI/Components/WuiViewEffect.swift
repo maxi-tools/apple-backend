@@ -38,6 +38,14 @@ import QuartzCore
 
 /// Thread-safe render state for ViewEffect
 private final class WuiViewEffectRenderState: @unchecked Sendable {
+    private final class BoolCompletionBox: @unchecked Sendable {
+        let completion: (Bool) -> Void
+
+        init(_ completion: @escaping (Bool) -> Void) {
+            self.completion = completion
+        }
+    }
+
     private var ffiEffect: CWaterUI.WuiViewEffect
     private var effectState: OpaquePointer?
     private var isInitializing = false
@@ -161,8 +169,22 @@ private final class WuiViewEffectRenderState: @unchecked Sendable {
         isInitializing = true
         lock.unlock()
 
+        let completionBox = BoolCompletionBox(completion)
+        let outputLayerAddr = Int(bitPattern: outputLayerPtr)
+
         renderQueue.async { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                DispatchQueue.main.async { completionBox.completion(false) }
+                return
+            }
+
+            guard let outputLayerPtr = UnsafeMutableRawPointer(bitPattern: outputLayerAddr) else {
+                self.lock.lock()
+                self.isInitializing = false
+                self.lock.unlock()
+                DispatchQueue.main.async { completionBox.completion(false) }
+                return
+            }
 
             let state: OpaquePointer? = withUnsafeMutablePointer(to: &self.ffiEffect) {
                 effectPtr in
@@ -183,7 +205,7 @@ private final class WuiViewEffectRenderState: @unchecked Sendable {
             self.lock.unlock()
 
             DispatchQueue.main.async {
-                completion(success)
+                completionBox.completion(success)
             }
         }
     }
@@ -201,10 +223,17 @@ private final class WuiViewEffectRenderState: @unchecked Sendable {
         }
 
         renderInFlight = true
+        let stateAddr = Int(bitPattern: state)
         lock.unlock()
 
         renderQueue.async { [weak self] in
             guard let self else { return }
+            guard let state = OpaquePointer(bitPattern: stateAddr) else {
+                self.lock.lock()
+                self.renderInFlight = false
+                self.lock.unlock()
+                return
+            }
             _ = waterui_view_effect_render(state)
             self.lock.lock()
             self.renderInFlight = false
@@ -271,8 +300,7 @@ final class WuiViewEffect: PlatformView, WuiComponent {
     #if canImport(UIKit)
         private var displayLink: CADisplayLink?
     #elseif canImport(AppKit)
-        private var displayLink: CVDisplayLink?
-        private var displayLinkUserInfo: UnsafeMutableRawPointer?
+        private var displayLink: CADisplayLink?
     #endif
 
     // MARK: - WuiComponent Init
@@ -431,41 +459,25 @@ final class WuiViewEffect: PlatformView, WuiComponent {
     #elseif canImport(AppKit)
         private func startDisplayLink() {
             guard displayLink == nil else { return }
-
-            var link: CVDisplayLink?
-            let status = CVDisplayLinkCreateWithActiveCGDisplays(&link)
-            guard status == kCVReturnSuccess, let link else { return }
-
+            let link: CADisplayLink
+            if let window {
+                link = window.displayLink(target: self, selector: #selector(render))
+            } else if let screen = NSScreen.main {
+                link = screen.displayLink(target: self, selector: #selector(render))
+            } else {
+                return
+            }
+            link.add(to: .main, forMode: .common)
             displayLink = link
-
-            let userInfo = Unmanaged.passRetained(renderState).toOpaque()
-            displayLinkUserInfo = userInfo
-
-            CVDisplayLinkSetOutputCallback(
-                link,
-                { _, _, _, _, _, userInfo -> CVReturn in
-                    guard let userInfo else { return kCVReturnError }
-                    let state = Unmanaged<WuiViewEffectRenderState>.fromOpaque(userInfo)
-                        .takeUnretainedValue()
-                    state.requestRender()
-                    return kCVReturnSuccess
-                },
-                userInfo
-            )
-
-            CVDisplayLinkStart(link)
         }
 
         private func stopDisplayLink() {
-            if let link = displayLink {
-                CVDisplayLinkStop(link)
-                displayLink = nil
-            }
+            displayLink?.invalidate()
+            displayLink = nil
+        }
 
-            if let userInfo = displayLinkUserInfo {
-                Unmanaged<WuiViewEffectRenderState>.fromOpaque(userInfo).release()
-                displayLinkUserInfo = nil
-            }
+        @objc private func render() {
+            onFrame()
         }
     #endif
 

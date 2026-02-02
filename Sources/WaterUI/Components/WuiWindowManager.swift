@@ -16,6 +16,7 @@ import os.log
 
 #if canImport(AppKit)
 import AppKit
+import QuartzCore
 #elseif canImport(UIKit)
 import UIKit
 #endif
@@ -233,15 +234,28 @@ final class WindowManagerImpl {
             window.contentMinSize = minSize
         }
 
-        // Wait for all GpuSurfaces to be ready before showing window
-        // This prevents flicker from surfaces appearing one-by-one
+        // IMPORTANT (GpuSurface first frame on macOS):
+        // CAMetalLayer-backed swapchains often can't produce a drawable until the window is
+        // actually on-screen. If we "wait for ready" before showing the window, the first
+        // `get_current_texture()` can time out and surfaces will still appear later.
+        //
+        // Strategy: show the window immediately but fully transparent, warm up all GpuSurfaces,
+        // then fade in to avoid visible "pop-in".
+        window.center()
+        window.alphaValue = 0.0
+        window.makeKeyAndOrderFront(nil)
+
         Task {
             await contentView.ready()
 
-            // Show the window after all GPU surfaces are ready
-            window.center()
-            window.makeKeyAndOrderFront(nil)
-            logger.debug("Window '\(title)' shown successfully")
+            await MainActor.run {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.12
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    window.animator().alphaValue = 1.0
+                }
+                logger.debug("Window '\(title)' shown successfully")
+            }
         }
     }
 

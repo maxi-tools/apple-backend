@@ -144,9 +144,15 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
         Bool,
         CWaterUI.WuiStr
     ) -> Void = { data, success, result in
-        guard let data else { return }
+        guard let data else {
+            WebViewWrapper.dropWuiStr(result)
+            return
+        }
         let ctx = Unmanaged<MessageReplyContext>.fromOpaque(data).takeRetainedValue()
-        guard let wrapper = ctx.wrapper else { return }
+        guard let wrapper = ctx.wrapper else {
+            WebViewWrapper.dropWuiStr(result)
+            return
+        }
 
         let payload = WuiStr(result).toString()
         let id = WebViewWrapper.jsonQuoted(ctx.requestId)
@@ -154,7 +160,7 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
         let body = WebViewWrapper.jsonQuoted(payload)
         let js = "window.__wateruiResolve(\(id), \(ok), \(body));"
         Task { @MainActor in
-            wrapper.webView.evaluateJavaScript(js, completionHandler: nil)
+            _ = try? await wrapper.webView.evaluateJavaScript(js)
         }
     }
 
@@ -177,10 +183,8 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
     }
 
     nonisolated func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        let name = message.name
-        let body = message.body
         Task { @MainActor [weak self] in
-            self?.handleScriptMessage(name: name, body: body)
+            self?.handleScriptMessage(name: message.name, body: message.body)
         }
     }
 
@@ -202,6 +206,35 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
             reply: reply
         )
         callback.call?(callback.data, msg)
+    }
+
+    @MainActor
+    private func cleanupForDrop() {
+        // Break retain cycles: WKUserContentController strongly retains its message handlers.
+        let controller = webView.configuration.userContentController
+        for name in messageHandlers.keys {
+            controller.removeScriptMessageHandler(forName: name)
+        }
+        for (_, cb) in messageHandlers {
+            cb.drop?(cb.data)
+        }
+        messageHandlers.removeAll()
+
+        if let cb = eventCallback {
+            cb.drop?(cb.data)
+            eventCallback = nil
+        }
+
+        progressObservation?.invalidate()
+        progressObservation = nil
+
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+
+        controller.removeAllUserScripts()
+        userScripts.removeAll()
+        installedBridge = false
     }
 
     func setCookie(_ setCookieHeaderValue: String) {
@@ -559,8 +592,11 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
             },
             drop: { rawPtr in
                 guard let rawPtr = rawPtr else { return }
-                // Release the retained reference
-                Unmanaged<WebViewWrapper>.fromOpaque(rawPtr).release()
+                Task { @MainActor in
+                    let wrapper = Unmanaged<WebViewWrapper>.fromOpaque(rawPtr).takeUnretainedValue()
+                    wrapper.cleanupForDrop()
+                    Unmanaged<WebViewWrapper>.fromOpaque(rawPtr).release()
+                }
             }
         )
     }
@@ -765,9 +801,9 @@ extension WebViewWrapper: WKNavigationDelegate {
                 return
             }
 
-            let urlStr = webView.url?.absoluteString ?? ""
             let message = (trustError as Error?)?.localizedDescription ?? "SSL certificate error"
             Task { @MainActor in
+                let urlStr = webView.url?.absoluteString ?? ""
                 emitSslError(urlStr, message: message)
                 completionHandler(.cancelAuthenticationChallenge, nil)
             }
@@ -824,6 +860,7 @@ final class WuiWebViewComponent: PlatformView, WuiComponent {
 
     private(set) var stretchAxis: WuiStretchAxis = .both
     private var webViewWrapper: WebViewWrapper?
+    private var webViewPtr: OpaquePointer?
 
     required init(anyview: OpaquePointer, env: WuiEnvironment) {
         super.init(frame: .zero)
@@ -832,6 +869,7 @@ final class WuiWebViewComponent: PlatformView, WuiComponent {
 
         // Get the WuiWebView opaque pointer
         let wuiWebView = waterui_force_as_webview(anyview)
+        self.webViewPtr = wuiWebView
         logger.warning("Got WuiWebView pointer: \(String(describing: wuiWebView))")
 
         // Get the native handle pointer (points to WebViewWrapper)
@@ -842,6 +880,7 @@ final class WuiWebViewComponent: PlatformView, WuiComponent {
             logger.error("ERROR: WebView native handle is null - downcast failed!")
             // Clean up the WuiWebView
             waterui_drop_web_view(wuiWebView)
+            self.webViewPtr = nil
             return
         }
 
@@ -850,9 +889,6 @@ final class WuiWebViewComponent: PlatformView, WuiComponent {
         self.webViewWrapper = wrapper
         logger.warning(
             "Got WebViewWrapper, webView URL: \(String(describing: wrapper.webView.url))")
-
-        // Clean up the WuiWebView after we have a strong reference to the wrapper
-        waterui_drop_web_view(wuiWebView)
 
         // Add the WKWebView as a subview
         let webView = wrapper.webView
@@ -866,6 +902,12 @@ final class WuiWebViewComponent: PlatformView, WuiComponent {
             webView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         logger.warning("WuiWebViewComponent setup complete - added WKWebView as subview")
+    }
+
+    @MainActor deinit {
+        if let webViewPtr {
+            waterui_drop_web_view(webViewPtr)
+        }
     }
 
     @available(*, unavailable)

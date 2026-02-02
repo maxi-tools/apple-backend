@@ -26,6 +26,14 @@ import QuartzCore
 #endif
 
 private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
+    private final class BoolCompletionBox: @unchecked Sendable {
+        let completion: (Bool) -> Void
+
+        init(_ completion: @escaping (Bool) -> Void) {
+            self.completion = completion
+        }
+    }
+
     private var ffiSurface: CWaterUI.WuiGpuSurface
     private var gpuState: OpaquePointer?
     private var isInitializing = false
@@ -201,8 +209,22 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         isInitializing = true
         lock.unlock()
 
+        let completionBox = BoolCompletionBox(completion)
+        let layerAddr = Int(bitPattern: layerPtr)
+
         renderQueue.async { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                DispatchQueue.main.async { completionBox.completion(false) }
+                return
+            }
+
+            guard let layerPtr = UnsafeMutableRawPointer(bitPattern: layerAddr) else {
+                self.lock.lock()
+                self.isInitializing = false
+                self.lock.unlock()
+                DispatchQueue.main.async { completionBox.completion(false) }
+                return
+            }
 
             let state: OpaquePointer? = withUnsafeMutablePointer(to: &self.ffiSurface) {
                 surfacePtr in
@@ -223,7 +245,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
             self.lock.unlock()
 
             DispatchQueue.main.async {
-                completion(success)
+                completionBox.completion(success)
             }
         }
     }
@@ -249,6 +271,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
 
         renderInFlight = true
         needsRender = false
+        let stateAddr = Int(bitPattern: state)
         let width = self.width
         let height = self.height
         lock.unlock()
@@ -258,10 +281,23 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
             // Sync pointer and gesture state before rendering
             self.syncPointerState()
             self.syncGestureState()
+            guard let state = OpaquePointer(bitPattern: stateAddr) else {
+                self.lock.lock()
+                self.renderInFlight = false
+                self.lock.unlock()
+                return
+            }
             _ = waterui_gpu_surface_render(state, width, height)
             self.lock.lock()
             self.renderInFlight = false
+            let shouldContinue = self.needsRender
             self.lock.unlock()
+
+            // If we became dirty while a render was in-flight, drain one more frame so
+            // on-demand surfaces don't stall until the next external event.
+            if shouldContinue {
+                self.requestRender(force: false)
+            }
         }
     }
 
@@ -404,6 +440,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         }
 
         guard let state else { return }
+        let stateAddr = Int(bitPattern: state)
 
         // Call await_ready on render queue with callback
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -412,7 +449,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
                 let context = Unmanaged.passRetained(continuation as AnyObject).toOpaque()
 
                 waterui_gpu_surface_await_ready(
-                    state,
+                    OpaquePointer(bitPattern: stateAddr),
                     { userData in
                         guard let userData else { return }
                         let cont = Unmanaged<AnyObject>.fromOpaque(userData).takeRetainedValue()
@@ -439,22 +476,161 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     }
 }
 
+#if canImport(AppKit)
+/// Shared display link per-window to avoid N× display-link overhead when many continuous
+/// `WuiGpuSurface`s are active in the same window.
+@MainActor
+private final class WuiGpuSurfaceDisplayLinkHub {
+    static let shared = WuiGpuSurfaceDisplayLinkHub()
+
+    @MainActor
+    private final class WindowTicker {
+        private let lock = NSLock()
+        private let surfaces = NSHashTable<WuiGpuSurfaceRenderState>.weakObjects()
+        private weak var window: NSWindow?
+        private var displayLink: CADisplayLink?
+        private var timerFallback: DispatchSourceTimer?
+
+        init(window: NSWindow) {
+            self.window = window
+        }
+
+        func add(_ state: WuiGpuSurfaceRenderState) {
+            lock.lock()
+            surfaces.add(state)
+            lock.unlock()
+            start()
+        }
+
+        func remove(_ state: WuiGpuSurfaceRenderState) -> Bool {
+            lock.lock()
+            surfaces.remove(state)
+            let empty = surfaces.allObjects.isEmpty
+            lock.unlock()
+            if empty {
+                stop()
+            }
+            return empty
+        }
+
+        private func startTimerFallbackIfNeeded() {
+            guard timerFallback == nil else { return }
+            let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
+            timer.schedule(deadline: .now(), repeating: 1.0 / 60.0, leeway: .milliseconds(2))
+            timer.setEventHandler { [weak self] in
+                Task { @MainActor in
+                    self?.tick()
+                }
+            }
+            timerFallback = timer
+            timer.resume()
+        }
+
+        @objc private func displayLinkDidFire(_ sender: CADisplayLink) {
+            tick()
+        }
+
+        private func start() {
+            if displayLink == nil {
+                let link: CADisplayLink?
+                if let window {
+                    link = window.displayLink(target: self, selector: #selector(displayLinkDidFire(_:)))
+                } else if let screen = NSScreen.main {
+                    link = screen.displayLink(target: self, selector: #selector(displayLinkDidFire(_:)))
+                } else {
+                    link = nil
+                }
+
+                if let link {
+                    link.add(to: .main, forMode: .common)
+                    displayLink = link
+                }
+            }
+
+            if let link = displayLink {
+                link.isPaused = false
+                if let timer = timerFallback {
+                    timer.cancel()
+                    timerFallback = nil
+                }
+            } else {
+                startTimerFallbackIfNeeded()
+            }
+        }
+
+        private func stop() {
+            if let link = displayLink {
+                link.invalidate()
+                displayLink = nil
+            }
+            if let timer = timerFallback {
+                timer.cancel()
+                timerFallback = nil
+            }
+        }
+
+        private func tick() {
+            // Avoid holding the lock while calling into render states.
+            lock.lock()
+            let states = surfaces.allObjects
+            lock.unlock()
+
+            for state in states {
+                state.requestRender(force: true)
+            }
+        }
+    }
+
+    private let lock = NSLock()
+    private var tickers: [ObjectIdentifier: WindowTicker] = [:]
+
+    func register(_ state: WuiGpuSurfaceRenderState, window: NSWindow) {
+        let windowId = ObjectIdentifier(window)
+
+        let ticker: WindowTicker
+        lock.lock()
+        if let existing = tickers[windowId] {
+            ticker = existing
+        } else {
+            let created = WindowTicker(window: window)
+            tickers[windowId] = created
+            ticker = created
+        }
+        lock.unlock()
+
+        ticker.add(state)
+    }
+
+    func unregister(_ state: WuiGpuSurfaceRenderState, windowId: ObjectIdentifier) {
+        lock.lock()
+        guard let ticker = tickers[windowId] else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+
+        let isEmpty = ticker.remove(state)
+        guard isEmpty else { return }
+
+        lock.lock()
+        if tickers[windowId] === ticker {
+            tickers.removeValue(forKey: windowId)
+        }
+        lock.unlock()
+    }
+}
+#endif
+
 /// High-performance GPU rendering surface using wgpu.
 /// Uses CAMetalLayer with CADisplayLink for 120fps rendering.
 @MainActor
 final class WuiGpuSurface: PlatformView, WuiComponent {
     static var rawId: CWaterUI.WuiTypeId { waterui_gpu_surface_id() }
-
-    private static let continuousRenderingEnabled: Bool = {
-        let raw = ProcessInfo.processInfo.environment["WATERUI_GPU_SURFACE_CONTINUOUS"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        return raw == "1" || raw == "true" || raw == "yes"
-    }()
+    private let renderMode: UInt32
 
     private(set) var stretchAxis: WuiStretchAxis = .both
 
-    private nonisolated(unsafe) let renderState: WuiGpuSurfaceRenderState
+    private let renderState: WuiGpuSurfaceRenderState
 
     /// The CAMetalLayer for GPU rendering
     private var metalLayer: CAMetalLayer!
@@ -463,8 +639,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 	    #if canImport(UIKit)
 	        private var displayLink: CADisplayLink?
 	    #elseif canImport(AppKit)
-	        private var displayLink: CVDisplayLink?
-	        private var displayLinkUserInfo: UnsafeMutableRawPointer?
+	        private var displayLinkWindowId: ObjectIdentifier?
 	        private var trackingArea: NSTrackingArea?
 	        private weak var observedWindow: NSWindow?
 	        private var windowObservers: [NSObjectProtocol] = []
@@ -501,9 +676,10 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 
     // MARK: - Designated Init
 
-	    init(stretchAxis: WuiStretchAxis, ffiSurface: CWaterUI.WuiGpuSurface) {
-	        self.stretchAxis = stretchAxis
-	        self.renderState = WuiGpuSurfaceRenderState(ffiSurface: ffiSurface)
+		    init(stretchAxis: WuiStretchAxis, ffiSurface: CWaterUI.WuiGpuSurface) {
+		        self.stretchAxis = stretchAxis
+		        self.renderMode = ffiSurface.render_mode
+		        self.renderState = WuiGpuSurfaceRenderState(ffiSurface: ffiSurface)
 
 	        super.init(frame: .zero)
 
@@ -516,25 +692,29 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 	        #if canImport(UIKit)
 	            let center = NotificationCenter.default
 	            appObservers.append(
-	                center.addObserver(
-	                    forName: UIApplication.willResignActiveNotification,
-	                    object: nil,
-	                    queue: .main
-	                ) { [weak self] _ in
-	                    self?.updateDisplayLinkState()
-	                }
-	            )
-	            appObservers.append(
-	                center.addObserver(
-	                    forName: UIApplication.didBecomeActiveNotification,
-	                    object: nil,
-	                    queue: .main
-	                ) { [weak self] _ in
-	                    self?.updateDisplayLinkState()
-	                }
-	            )
-	        #endif
-	    }
+                center.addObserver(
+                    forName: UIApplication.willResignActiveNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.updateDisplayLinkState()
+                    }
+                }
+            )
+            appObservers.append(
+                center.addObserver(
+                    forName: UIApplication.didBecomeActiveNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.updateDisplayLinkState()
+                    }
+                }
+            )
+        #endif
+    }
 
     // MARK: - Pointer Tracking Setup
 
@@ -898,7 +1078,9 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 
         metalLayer.device = device
         metalLayer.framebufferOnly = false  // Allow texture readback for preview capture
-        metalLayer.maximumDrawableCount = 3  // Triple buffering for smooth 120fps
+        // Keep drawable count low for on-demand surfaces (memory + drawable pressure).
+        // Continuous surfaces benefit from triple-buffering for smooth 120fps.
+        metalLayer.maximumDrawableCount = (renderMode == 0) ? 3 : 2
         metalLayer.isOpaque = false  // Allow transparency for compositing with background
         #if canImport(UIKit)
             metalLayer.backgroundColor = UIColor.clear.cgColor  // Ensure no black background
@@ -963,8 +1145,10 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 	            guard success else { return }
 	            self.isGpuInitialized = true
 	            self.updateDisplayLinkState()
-	            // Trigger immediate first render to avoid empty frame on window open
-	            self.renderFrame()
+	            // Trigger first frames immediately. On-demand surfaces don't have a display link,
+	            // so a transient swapchain timeout could otherwise leave them blank until another
+	            // event marks them dirty.
+	            self.renderFirstFrames()
 	        }
 	    }
 
@@ -995,49 +1179,49 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         @objc private func render() {
             renderFrame(force: true)
         }
-    #elseif canImport(AppKit)
-        private func startDisplayLink() {
-            guard displayLink == nil else { return }
+	    #elseif canImport(AppKit)
+	        private func startDisplayLink() {
+	            guard let window else { return }
 
-            var link: CVDisplayLink?
-            let status = CVDisplayLinkCreateWithActiveCGDisplays(&link)
-            guard status == kCVReturnSuccess, let link else { return }
+	            let windowId = ObjectIdentifier(window)
+	            if displayLinkWindowId == windowId {
+	                return
+	            }
 
-            displayLink = link
+	            if let oldId = displayLinkWindowId {
+	                WuiGpuSurfaceDisplayLinkHub.shared.unregister(renderState, windowId: oldId)
+	            }
 
-            let userInfo = Unmanaged.passRetained(renderState).toOpaque()
-            displayLinkUserInfo = userInfo
+	            WuiGpuSurfaceDisplayLinkHub.shared.register(renderState, window: window)
+	            displayLinkWindowId = windowId
+	        }
 
-            CVDisplayLinkSetOutputCallback(
-                link,
-                { _, _, _, _, _, userInfo -> CVReturn in
-                    guard let userInfo else { return kCVReturnError }
-                    let state = Unmanaged<WuiGpuSurfaceRenderState>.fromOpaque(userInfo)
-                        .takeUnretainedValue()
-                    state.requestRender(force: true)
-                    return kCVReturnSuccess
-                },
-                userInfo
-            )
-
-            CVDisplayLinkStart(link)
-        }
-
-        private func stopDisplayLink() {
-            if let link = displayLink {
-                CVDisplayLinkStop(link)
-                displayLink = nil
-            }
-
-            if let userInfo = displayLinkUserInfo {
-                Unmanaged<WuiGpuSurfaceRenderState>.fromOpaque(userInfo).release()
-                displayLinkUserInfo = nil
-            }
-        }
-    #endif
+	        private func stopDisplayLink() {
+	            guard let windowId = displayLinkWindowId else { return }
+	            WuiGpuSurfaceDisplayLinkHub.shared.unregister(renderState, windowId: windowId)
+	            displayLinkWindowId = nil
+	        }
+	    #endif
 
     private func renderFrame(force: Bool = false) {
         renderState.requestRender(force: force)
+    }
+
+    private func renderFirstFrames() {
+        // Always request a frame immediately.
+        renderFrame(force: true)
+
+        // Continuous surfaces will be driven by the display link; only add retries for on-demand.
+        guard renderMode != 0 else { return }
+
+        // Schedule a couple of forced retries to survive early drawable timeouts on macOS.
+        // Keep this cheap: solid colors are fast and this only runs at init time.
+        let retryDelays: [DispatchTimeInterval] = [.milliseconds(16), .milliseconds(80)]
+        for delay in retryDelays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.renderFrame(force: true)
+            }
+        }
     }
 
 	    private func isEffectivelyVisible() -> Bool {
@@ -1058,7 +1242,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 
     private func updateDisplayLinkState() {
         guard isGpuInitialized else { return }
-        guard Self.continuousRenderingEnabled else {
+        guard renderMode == 0 else {
             stopDisplayLink()
             return
         }
@@ -1249,51 +1433,61 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 
 	            windowObservers.append(
 	                center.addObserver(
-	                    forName: NSWindow.didChangeOcclusionStateNotification,
-	                    object: window,
-	                    queue: .main
-	                ) { [weak self] _ in
-	                    self?.updateDisplayLinkState()
-	                }
-	            )
-	            windowObservers.append(
-	                center.addObserver(
-	                    forName: NSWindow.didMiniaturizeNotification,
-	                    object: window,
-	                    queue: .main
-	                ) { [weak self] _ in
-	                    self?.updateDisplayLinkState()
-	                }
-	            )
-	            windowObservers.append(
-	                center.addObserver(
-	                    forName: NSWindow.didDeminiaturizeNotification,
-	                    object: window,
-	                    queue: .main
-	                ) { [weak self] _ in
-	                    self?.updateDisplayLinkState()
-	                }
-	            )
-	            windowObservers.append(
-	                center.addObserver(
-	                    forName: NSWindow.didBecomeKeyNotification,
-	                    object: window,
-	                    queue: .main
-	                ) { [weak self] _ in
-	                    self?.updateDisplayLinkState()
-	                }
-	            )
-	            windowObservers.append(
-	                center.addObserver(
-	                    forName: NSWindow.didResignKeyNotification,
-	                    object: window,
-	                    queue: .main
-	                ) { [weak self] _ in
-	                    self?.updateDisplayLinkState()
-	                }
-	            )
-	        }
-	    #endif
+                    forName: NSWindow.didChangeOcclusionStateNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.updateDisplayLinkState()
+                    }
+                }
+            )
+            windowObservers.append(
+                center.addObserver(
+                    forName: NSWindow.didMiniaturizeNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.updateDisplayLinkState()
+                    }
+                }
+            )
+            windowObservers.append(
+                center.addObserver(
+                    forName: NSWindow.didDeminiaturizeNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.updateDisplayLinkState()
+                    }
+                }
+            )
+            windowObservers.append(
+                center.addObserver(
+                    forName: NSWindow.didBecomeKeyNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.updateDisplayLinkState()
+                    }
+                }
+            )
+            windowObservers.append(
+                center.addObserver(
+                    forName: NSWindow.didResignKeyNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.updateDisplayLinkState()
+                    }
+                }
+            )
+        }
+    #endif
 
 	    // MARK: - Cleanup
 

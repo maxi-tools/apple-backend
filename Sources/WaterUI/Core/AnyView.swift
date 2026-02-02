@@ -156,11 +156,6 @@ private func markAsRootContentEnv(_ env: WuiEnvironment) {
     // Only capture the first one
     if pendingRootEnv == nil {
         pendingRootEnv = env
-        // Debug: check what color scheme this env has
-        if let signal = waterui_theme_color_scheme(env.inner) {
-            let scheme = waterui_read_computed_color_scheme(signal)
-            waterui_drop_computed_color_scheme(signal)
-        }
     }
 }
 

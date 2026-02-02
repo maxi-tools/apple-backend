@@ -203,7 +203,10 @@ struct WuiStr {
 
     func toString() -> String {
         let bytes = inner.toArray()
-        return String(bytes: bytes, encoding: .utf8)!
+        if let string = String(bytes: bytes, encoding: .utf8) {
+            return string
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     func intoInner() -> CWaterUI.WuiStr {

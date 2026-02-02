@@ -18,17 +18,9 @@ private func applyDynamicRange(_ mode: WuiDynamicRangeMode, to layer: CALayer?) 
     guard let layer else { return }
 
     #if canImport(UIKit)
-    if #available(iOS 26.0, tvOS 26.0, visionOS 26.0, watchOS 26.0, macCatalyst 26.0, *) {
-        layer.preferredDynamicRange = (mode == .high) ? .high : .standard
-    } else if #available(iOS 17.0, macCatalyst 17.0, *) {
-        layer.wantsExtendedDynamicRangeContent = (mode == .high)
-    }
+    layer.preferredDynamicRange = (mode == .high) ? .high : .standard
     #elseif canImport(AppKit)
-    if #available(macOS 26.0, *) {
-        layer.preferredDynamicRange = (mode == .high) ? .high : .standard
-    } else if #available(macOS 14.0, *) {
-        layer.wantsExtendedDynamicRangeContent = (mode == .high)
-    }
+    layer.preferredDynamicRange = (mode == .high) ? .high : .standard
     #endif
 
     if let sublayers = layer.sublayers {

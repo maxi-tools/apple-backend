@@ -20,13 +20,18 @@ class WatcherGuard {
 
 @MainActor
 class WuiWatcherMetadata {
-    var inner: OpaquePointer
-    init(_ inner: OpaquePointer) {
+    var inner: OpaquePointer?
+    init(_ inner: OpaquePointer?) {
         self.inner = inner
     }
 
     func getAnimation() -> CWaterUI.WuiAnimation {
-        waterui_get_animation(inner)
+        guard let inner else {
+            var animation = CWaterUI.WuiAnimation()
+            animation.tag = WuiAnimation_None
+            return animation
+        }
+        return waterui_get_animation(inner)
     }
 
     var animation: Animation? {
@@ -38,7 +43,9 @@ class WuiWatcherMetadata {
     }
 
     @MainActor deinit {
-        waterui_drop_watcher_metadata(inner)
+        if let inner {
+            waterui_drop_watcher_metadata(inner)
+        }
     }
 }
 
@@ -67,12 +74,19 @@ final class Wrapper<T> {
 func callWrapper<T>(
     _ data: UnsafeMutableRawPointer?, _ value: T, _ metadata: OpaquePointer?
 ) {
-    let wrapper = Unmanaged<Wrapper<T>>.fromOpaque(data!).takeUnretainedValue()
-    wrapper.inner(value, WuiWatcherMetadata(metadata!))
+    guard let data else {
+        if let metadata {
+            waterui_drop_watcher_metadata(metadata)
+        }
+        return
+    }
+    let wrapper = Unmanaged<Wrapper<T>>.fromOpaque(data).takeUnretainedValue()
+    wrapper.inner(value, WuiWatcherMetadata(metadata))
 }
 
 func dropWrapper<T>(_ data: UnsafeMutableRawPointer?, _: T.Type) {
-    _ = Unmanaged<Wrapper<T>>.fromOpaque(data!).takeRetainedValue()
+    guard let data else { return }
+    _ = Unmanaged<Wrapper<T>>.fromOpaque(data).takeRetainedValue()
 }
 
 func wrap<T>(_ f: @escaping (T, WuiWatcherMetadata) -> Void) -> UnsafeMutableRawPointer {
@@ -349,12 +363,14 @@ final class Wrapper3<A, B, C> {
 func callWrapper3<A, B, C>(
     _ data: UnsafeMutableRawPointer?, _ a: A, _ b: B, _ c: C
 ) {
-    let wrapper = Unmanaged<Wrapper3<A, B, C>>.fromOpaque(data!).takeUnretainedValue()
+    guard let data else { return }
+    let wrapper = Unmanaged<Wrapper3<A, B, C>>.fromOpaque(data).takeUnretainedValue()
     wrapper.inner(a, b, c)
 }
 
 func dropWrapper3<A, B, C>(_ data: UnsafeMutableRawPointer?, _: (A, B, C).Type) {
-    _ = Unmanaged<Wrapper3<A, B, C>>.fromOpaque(data!).takeRetainedValue()
+    guard let data else { return }
+    _ = Unmanaged<Wrapper3<A, B, C>>.fromOpaque(data).takeRetainedValue()
 }
 
 func wrap3<A, B, C>(_ f: @escaping (A, B, C) -> Void) -> UnsafeMutableRawPointer {
@@ -368,7 +384,12 @@ func makeColorWatcher(_ f: @escaping (OpaquePointer, WuiWatcherMetadata) -> Void
     // The callback receives an opaque pointer to WuiColor
     let call: @convention(c) (UnsafeMutableRawPointer?, OpaquePointer?, OpaquePointer?) -> Void = {
         data, value, metadata in
-        guard let value = value else { return }
+        guard let value else {
+            if let metadata {
+                waterui_drop_watcher_metadata(metadata)
+            }
+            return
+        }
         callWrapper(data, value, metadata)
     }
     let drop: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
