@@ -8,14 +8,21 @@ import AppKit
 #endif
 
 @MainActor
-private enum WuiDynamicRangeMode {
+enum WuiDynamicRangeMode {
     case standard
     case high
 }
 
 @MainActor
-private func applyDynamicRange(_ mode: WuiDynamicRangeMode, to layer: CALayer?) {
+private enum WuiDynamicRangeAssociatedKeys {
+    static var mode: UInt8 = 0
+}
+
+@MainActor
+func applyDynamicRange(_ mode: WuiDynamicRangeMode, to layer: CALayer?) {
     guard let layer else { return }
+
+    objc_setAssociatedObject(layer, &WuiDynamicRangeAssociatedKeys.mode, mode, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
     #if canImport(UIKit)
     layer.preferredDynamicRange = (mode == .high) ? .high : .standard
@@ -31,11 +38,29 @@ private func applyDynamicRange(_ mode: WuiDynamicRangeMode, to layer: CALayer?) 
 }
 
 @MainActor
-private func applyDynamicRange(_ mode: WuiDynamicRangeMode, to view: PlatformView) {
+func applyDynamicRange(_ mode: WuiDynamicRangeMode, to view: PlatformView) {
+    objc_setAssociatedObject(view, &WuiDynamicRangeAssociatedKeys.mode, mode, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     #if canImport(AppKit)
     view.wantsLayer = true
     #endif
     applyDynamicRange(mode, to: view.layer)
+}
+
+@MainActor
+func resolveDynamicRange(for view: PlatformView) -> WuiDynamicRangeMode {
+    var current: PlatformView? = view
+    while let node = current {
+        if let tagged = objc_getAssociatedObject(node, &WuiDynamicRangeAssociatedKeys.mode) as? WuiDynamicRangeMode {
+            return tagged
+        }
+        current = node.superview
+    }
+    return .high
+}
+
+@MainActor
+func applyResolvedDynamicRange(to layer: CALayer?, for view: PlatformView) {
+    applyDynamicRange(resolveDynamicRange(for: view), to: layer)
 }
 
 /// Component for Metadata<StandardDynamicRange>.

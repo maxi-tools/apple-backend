@@ -88,6 +88,7 @@ final class WuiVideo: PlatformView, WuiComponent {
         self.layer.addSublayer(playerLayer)
         #endif
 
+        applyResolvedDynamicRange(to: playerLayer, for: self)
         setupEndNotification()
         updateSource(sourceComputed.value)
         updateVolume(volume.value)
@@ -132,6 +133,7 @@ final class WuiVideo: PlatformView, WuiComponent {
         CATransaction.setDisableActions(true)
         playerLayer.frame = bounds
         CATransaction.commit()
+        applyResolvedDynamicRange(to: playerLayer, for: self)
     }
     #elseif canImport(AppKit)
     override func layout() {
@@ -140,6 +142,7 @@ final class WuiVideo: PlatformView, WuiComponent {
         CATransaction.setDisableActions(true)
         playerLayer.frame = bounds
         CATransaction.commit()
+        applyResolvedDynamicRange(to: playerLayer, for: self)
     }
 
     override var isFlipped: Bool { true }

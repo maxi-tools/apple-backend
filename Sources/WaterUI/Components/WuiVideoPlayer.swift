@@ -141,6 +141,9 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
             pv.trailingAnchor.constraint(equalTo: trailingAnchor),
             pv.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+        if let layer = pv.layer {
+            applyResolvedDynamicRange(to: layer, for: self)
+        }
         self.playerView = pv
 
         #elseif canImport(UIKit)
@@ -157,6 +160,9 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
         pvc.videoGravity = aspectRatio
 
         addSubview(pvc.view)
+        if let layer = pvc.view.layer {
+            applyResolvedDynamicRange(to: layer, for: self)
+        }
         self.playerViewController = pvc
 
         // When controls are hidden, make the player transparent to touches
@@ -238,6 +244,9 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
         super.layoutSubviews()
         // AVPlayerViewController's view uses frame-based layout
         playerViewController?.view.frame = bounds
+        if let layer = playerViewController?.view.layer {
+            applyResolvedDynamicRange(to: layer, for: self)
+        }
     }
     #elseif canImport(AppKit)
     override func viewDidMoveToWindow() {
@@ -253,6 +262,9 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
     override func layout() {
         super.layout()
         // AVPlayerView uses auto-layout constraints set during configuration
+        if let layer = playerView?.layer {
+            applyResolvedDynamicRange(to: layer, for: self)
+        }
     }
 
     override var isFlipped: Bool { true }
