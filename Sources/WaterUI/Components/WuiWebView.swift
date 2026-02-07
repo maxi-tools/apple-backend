@@ -252,26 +252,30 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
         refreshCookieCache()
     }
 
+    private static func serializeCookies(_ cookies: [HTTPCookie]) -> String {
+        let lines = cookies.map { cookie in
+            var parts: [String] = ["\(cookie.name)=\(cookie.value)"]
+            if let domain = cookie.domain as String? { parts.append("Domain=\(domain)") }
+            if let path = cookie.path as String? { parts.append("Path=\(path)") }
+            if let expires = cookie.expiresDate {
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = TimeZone(secondsFromGMT: 0)
+                formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+                parts.append("Expires=\(formatter.string(from: expires))")
+            }
+            if cookie.isSecure { parts.append("Secure") }
+            if cookie.isHTTPOnly { parts.append("HttpOnly") }
+            return parts.joined(separator: "; ")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     func refreshCookieCache() {
         let store = webView.configuration.websiteDataStore.httpCookieStore
         store.getAllCookies { [weak self] cookies in
             guard let self else { return }
-            let lines = cookies.map { cookie in
-                var parts: [String] = ["\(cookie.name)=\(cookie.value)"]
-                if let domain = cookie.domain as String? { parts.append("Domain=\(domain)") }
-                if let path = cookie.path as String? { parts.append("Path=\(path)") }
-                if let expires = cookie.expiresDate {
-                    let formatter = DateFormatter()
-                    formatter.locale = Locale(identifier: "en_US_POSIX")
-                    formatter.timeZone = TimeZone(secondsFromGMT: 0)
-                    formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
-                    parts.append("Expires=\(formatter.string(from: expires))")
-                }
-                if cookie.isSecure { parts.append("Secure") }
-                if cookie.isHTTPOnly { parts.append("HttpOnly") }
-                return parts.joined(separator: "; ")
-            }
-            self.cachedCookies = lines.joined(separator: "\n")
+            self.cachedCookies = Self.serializeCookies(cookies)
         }
     }
 
@@ -575,7 +579,25 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
                     return WuiStr(string: "").intoInner()
                 }
                 let wrapper = Unmanaged<WebViewWrapper>.fromOpaque(rawPtr).takeUnretainedValue()
-                return WuiStr(string: wrapper.cachedCookies).intoInner()
+
+                if Thread.isMainThread {
+                    wrapper.refreshCookieCache()
+                    return WuiStr(string: wrapper.cachedCookies).intoInner()
+                }
+
+                let semaphore = DispatchSemaphore(value: 0)
+                var latest = wrapper.cachedCookies
+                DispatchQueue.main.async {
+                    let store = wrapper.webView.configuration.websiteDataStore.httpCookieStore
+                    store.getAllCookies { cookies in
+                        let serialized = WebViewWrapper.serializeCookies(cookies)
+                        wrapper.cachedCookies = serialized
+                        latest = serialized
+                        semaphore.signal()
+                    }
+                }
+                _ = semaphore.wait(timeout: .now() + .milliseconds(500))
+                return WuiStr(string: latest).intoInner()
             },
             run_javascript: { rawPtr, script, callback in
                 guard let rawPtr = rawPtr else {
