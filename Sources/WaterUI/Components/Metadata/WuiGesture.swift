@@ -2,9 +2,26 @@ import CWaterUI
 
 #if canImport(UIKit)
 import UIKit
+private typealias PlatformGestureRecognizer = UIGestureRecognizer
 #elseif canImport(AppKit)
 import AppKit
+private typealias PlatformGestureRecognizer = NSGestureRecognizer
 #endif
+
+@MainActor
+private final class GestureTarget: NSObject {
+    private let handler: (PlatformGestureRecognizer) -> Void
+
+    init(_ handler: @escaping (PlatformGestureRecognizer) -> Void) {
+        self.handler = handler
+        super.init()
+    }
+
+    @objc
+    func invoke(_ recognizer: PlatformGestureRecognizer) {
+        handler(recognizer)
+    }
+}
 
 /// Component for Metadata<GestureObserver>.
 ///
@@ -16,6 +33,8 @@ final class WuiGesture: PlatformView, WuiComponent {
     private let contentView: any WuiComponent
     private let env: WuiEnvironment
     private let actionPtr: OpaquePointer
+    private let gesture: CWaterUI.WuiGesture
+    private var gestureTargets: [GestureTarget] = []
 
     var stretchAxis: WuiStretchAxis {
         contentView.stretchAxis
@@ -26,8 +45,8 @@ final class WuiGesture: PlatformView, WuiComponent {
 
         self.env = env
         self.actionPtr = metadata.value.action
+        self.gesture = metadata.value.gesture
 
-        // Resolve the content
         self.contentView = WuiAnyView.resolve(anyview: metadata.content, env: env)
 
         super.init(frame: .zero)
@@ -35,8 +54,13 @@ final class WuiGesture: PlatformView, WuiComponent {
         contentView.translatesAutoresizingMaskIntoConstraints = true
         addSubview(contentView)
 
-        // Attach gesture recognizer based on type
-        attachGesture(metadata.value.gesture)
+        #if canImport(UIKit)
+        isUserInteractionEnabled = true
+        #endif
+
+        attachGesture(gesture) { [weak self] in
+            self?.callAction()
+        }
     }
 
     @available(*, unavailable)
@@ -44,146 +68,197 @@ final class WuiGesture: PlatformView, WuiComponent {
         fatalError("init(coder:) has not been implemented")
     }
 
-    private func attachGesture(_ gesture: CWaterUI.WuiGesture) {
+    private func registerGestureRecognizer(
+        _ recognizer: PlatformGestureRecognizer,
+        handler: @escaping (PlatformGestureRecognizer) -> Void
+    ) {
+        let target = GestureTarget(handler)
+        gestureTargets.append(target)
         #if canImport(UIKit)
-        switch gesture.tag {
-        case WuiGesture_Tap:
-            let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
-            tap.numberOfTapsRequired = Int(gesture.tap.count)
-            self.addGestureRecognizer(tap)
-            self.isUserInteractionEnabled = true
-
-        case WuiGesture_LongPress:
-            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
-            longPress.minimumPressDuration = TimeInterval(gesture.long_press.duration) / 1000.0
-            self.addGestureRecognizer(longPress)
-            self.isUserInteractionEnabled = true
-
-        case WuiGesture_Drag:
-            let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan))
-            self.addGestureRecognizer(pan)
-            self.isUserInteractionEnabled = true
-
-        case WuiGesture_Magnification:
-            let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch))
-            self.addGestureRecognizer(pinch)
-            self.isUserInteractionEnabled = true
-
-        case WuiGesture_Rotation:
-            let rotation = UIRotationGestureRecognizer(target: self, action: #selector(handleRotation))
-            self.addGestureRecognizer(rotation)
-            self.isUserInteractionEnabled = true
-
-        case WuiGesture_Then:
-            // For compound gestures, attach the first one
-            // Full implementation would chain gesture states
-            if let first = gesture.then.first {
-                attachGesture(first.pointee)
-            }
-
-        default:
-            break
-        }
+        recognizer.addTarget(target, action: #selector(GestureTarget.invoke(_:)))
         #elseif canImport(AppKit)
+        recognizer.target = target
+        recognizer.action = #selector(GestureTarget.invoke(_:))
+        #endif
+        addGestureRecognizer(recognizer)
+    }
+
+    private func attachGesture(_ gesture: CWaterUI.WuiGesture, onRecognized: @escaping () -> Void) {
         switch gesture.tag {
         case WuiGesture_Tap:
-            let click = NSClickGestureRecognizer(target: self, action: #selector(handleClick))
-            click.numberOfClicksRequired = Int(gesture.tap.count)
-            self.addGestureRecognizer(click)
+            let taps = Int(gesture.tap.count)
+            #if canImport(UIKit)
+            let recognizer = UITapGestureRecognizer()
+            recognizer.numberOfTapsRequired = max(taps, 1)
+            registerGestureRecognizer(recognizer) { recognizer in
+                guard recognizer.state == .ended else { return }
+                onRecognized()
+            }
+            #elseif canImport(AppKit)
+            let recognizer = NSClickGestureRecognizer()
+            recognizer.numberOfClicksRequired = max(taps, 1)
+            registerGestureRecognizer(recognizer) { recognizer in
+                guard recognizer.state == .ended else { return }
+                onRecognized()
+            }
+            #endif
 
         case WuiGesture_LongPress:
-            let press = NSPressGestureRecognizer(target: self, action: #selector(handlePress))
-            self.addGestureRecognizer(press)
+            #if canImport(UIKit)
+            let recognizer = UILongPressGestureRecognizer()
+            recognizer.minimumPressDuration = TimeInterval(gesture.long_press.duration) / 1000.0
+            registerGestureRecognizer(recognizer) { recognizer in
+                guard recognizer.state == .began else { return }
+                onRecognized()
+            }
+            #elseif canImport(AppKit)
+            let recognizer = NSPressGestureRecognizer()
+            recognizer.minimumPressDuration = TimeInterval(gesture.long_press.duration) / 1000.0
+            registerGestureRecognizer(recognizer) { recognizer in
+                guard recognizer.state == .began else { return }
+                onRecognized()
+            }
+            #endif
 
         case WuiGesture_Drag:
-            let pan = NSPanGestureRecognizer(target: self, action: #selector(handlePanMac))
-            self.addGestureRecognizer(pan)
+            #if canImport(UIKit)
+            let recognizer = UIPanGestureRecognizer()
+            registerGestureRecognizer(recognizer) { recognizer in
+                guard recognizer.state == .ended else { return }
+                onRecognized()
+            }
+            #elseif canImport(AppKit)
+            let recognizer = NSPanGestureRecognizer()
+            registerGestureRecognizer(recognizer) { recognizer in
+                guard recognizer.state == .ended else { return }
+                onRecognized()
+            }
+            #endif
 
         case WuiGesture_Magnification:
-            let magnify = NSMagnificationGestureRecognizer(target: self, action: #selector(handleMagnify))
-            self.addGestureRecognizer(magnify)
+            #if canImport(UIKit)
+            let recognizer = UIPinchGestureRecognizer()
+            registerGestureRecognizer(recognizer) { recognizer in
+                guard recognizer.state == .ended else { return }
+                onRecognized()
+            }
+            #elseif canImport(AppKit)
+            let recognizer = NSMagnificationGestureRecognizer()
+            registerGestureRecognizer(recognizer) { recognizer in
+                guard recognizer.state == .ended else { return }
+                onRecognized()
+            }
+            #endif
 
         case WuiGesture_Rotation:
-            let rotate = NSRotationGestureRecognizer(target: self, action: #selector(handleRotateMac))
-            self.addGestureRecognizer(rotate)
+            #if canImport(UIKit)
+            let recognizer = UIRotationGestureRecognizer()
+            registerGestureRecognizer(recognizer) { recognizer in
+                guard recognizer.state == .ended else { return }
+                onRecognized()
+            }
+            #elseif canImport(AppKit)
+            let recognizer = NSRotationGestureRecognizer()
+            registerGestureRecognizer(recognizer) { recognizer in
+                guard recognizer.state == .ended else { return }
+                onRecognized()
+            }
+            #endif
 
         case WuiGesture_Then:
-            // For compound gestures, attach the first one
-            if let first = gesture.then.first {
-                attachGesture(first.pointee)
+            guard
+                let firstPtr = gesture.then.first,
+                let secondPtr = gesture.then.then
+            else {
+                return
+            }
+
+            var armed = false
+            attachGesture(firstPtr.pointee) {
+                armed = true
+            }
+            attachGesture(secondPtr.pointee) {
+                guard armed else { return }
+                armed = false
+                onRecognized()
+            }
+
+        case WuiGesture_Simultaneous:
+            guard
+                let firstPtr = gesture.simultaneous.first,
+                let secondPtr = gesture.simultaneous.second
+            else {
+                return
+            }
+
+            attachGesture(firstPtr.pointee, onRecognized: onRecognized)
+            attachGesture(secondPtr.pointee, onRecognized: onRecognized)
+
+        case WuiGesture_Exclusive:
+            guard
+                let firstPtr = gesture.exclusive.first,
+                let secondPtr = gesture.exclusive.second
+            else {
+                return
+            }
+
+            var lastResolvedAt = 0.0
+            let suppressWindow = 0.05
+            let resolveOncePerWindow = {
+                let now = Date().timeIntervalSinceReferenceDate
+                guard now - lastResolvedAt > suppressWindow else { return }
+                lastResolvedAt = now
+                onRecognized()
+            }
+
+            attachGesture(firstPtr.pointee) {
+                resolveOncePerWindow()
+            }
+            attachGesture(secondPtr.pointee) {
+                resolveOncePerWindow()
             }
 
         default:
             break
         }
-        #endif
+    }
+
+    private func releaseCompositePointers(in gesture: CWaterUI.WuiGesture) {
+        switch gesture.tag {
+        case WuiGesture_Then:
+            if let firstPtr = gesture.then.first {
+                waterui_drop_gesture(firstPtr)
+            }
+            if let secondPtr = gesture.then.then {
+                waterui_drop_gesture(secondPtr)
+            }
+        case WuiGesture_Simultaneous:
+            if let firstPtr = gesture.simultaneous.first {
+                waterui_drop_gesture(firstPtr)
+            }
+            if let secondPtr = gesture.simultaneous.second {
+                waterui_drop_gesture(secondPtr)
+            }
+        case WuiGesture_Exclusive:
+            if let firstPtr = gesture.exclusive.first {
+                waterui_drop_gesture(firstPtr)
+            }
+            if let secondPtr = gesture.exclusive.second {
+                waterui_drop_gesture(secondPtr)
+            }
+        default:
+            return
+        }
     }
 
     private func callAction() {
         waterui_call_action(actionPtr, env.inner)
     }
 
-    #if canImport(UIKit)
-    @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
-        if recognizer.state == .ended {
-            callAction()
-        }
+    @MainActor deinit {
+        waterui_drop_action(actionPtr)
+        releaseCompositePointers(in: gesture)
     }
-
-    @objc private func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
-        if recognizer.state == .began {
-            callAction()
-        }
-    }
-
-    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
-        if recognizer.state == .ended {
-            callAction()
-        }
-    }
-
-    @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
-        if recognizer.state == .ended {
-            callAction()
-        }
-    }
-
-    @objc private func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
-        if recognizer.state == .ended {
-            callAction()
-        }
-    }
-    #elseif canImport(AppKit)
-    @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
-        if recognizer.state == .ended {
-            callAction()
-        }
-    }
-
-    @objc private func handlePress(_ recognizer: NSPressGestureRecognizer) {
-        if recognizer.state == .began {
-            callAction()
-        }
-    }
-
-    @objc private func handlePanMac(_ recognizer: NSPanGestureRecognizer) {
-        if recognizer.state == .ended {
-            callAction()
-        }
-    }
-
-    @objc private func handleMagnify(_ recognizer: NSMagnificationGestureRecognizer) {
-        if recognizer.state == .ended {
-            callAction()
-        }
-    }
-
-    @objc private func handleRotateMac(_ recognizer: NSRotationGestureRecognizer) {
-        if recognizer.state == .ended {
-            callAction()
-        }
-    }
-    #endif
 
     func layoutPriority() -> Int32 {
         contentView.layoutPriority()

@@ -123,10 +123,10 @@ private let presentImpl: @convention(c) (WuiMediaFilterType, MediaPickerPresentC
     }
 }
 
-/// Installs the MediaPickerManager into the environment.
-/// Call this during WaterUI initialization to enable MediaPicker functionality.
+/// Media picker manager installation is no longer needed.
+/// Media picker is now implemented via waterkit-dialog in Rust.
 public func installMediaPickerManager(env: OpaquePointer?) {
-    waterui_env_install_media_picker_manager(env, presentImpl, loadMediaImpl)
+    _ = env
 }
 
 /// Loads the media and calls the callback with the file URL.

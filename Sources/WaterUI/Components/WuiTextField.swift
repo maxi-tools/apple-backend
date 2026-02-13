@@ -1,15 +1,5 @@
 // WuiTextField.swift
 // Text field component - merged UIKit and AppKit implementation
-//
-// # Layout Behavior
-// TextField expands horizontally to fill available width, but has fixed intrinsic height.
-// Includes optional label at top and placeholder text support.
-// Use frame modifiers to constrain width if needed.
-//
-// // INTERNAL: Layout Contract for Backend Implementers
-// // - stretchAxis: .horizontal (expands width, intrinsic height)
-// // - sizeThatFits: Returns proposed width (min 100pt), intrinsic height
-// // - Priority: 0 (default)
 
 import CWaterUI
 
@@ -41,32 +31,36 @@ final class WuiTextField: PlatformView, WuiComponent {
     private(set) var stretchAxis: WuiStretchAxis
 
     #if canImport(UIKit)
-    private let textField = UITextField()
+    private let textView = UITextView()
+    private let placeholderLabel = UILabel()
     #elseif canImport(AppKit)
     private let textField = NSTextField()
     #endif
+
     private var bindingWatcher: WatcherGuard?
     private var promptWatcher: WatcherGuard?
     private var isSyncingFromBinding = false
 
     private var labelView: WuiAnyView
-    private var binding: WuiBinding<WuiStr>
+    private var binding: WuiBinding<WuiStyledStr>
     private var prompt: WuiComputed<WuiStyledStr>
     #if canImport(UIKit)
     private var keyboard: CWaterUI.WuiKeyboardType
     #endif
     private var env: WuiEnvironment
 
-    // Layout constants
-    private let verticalSpacing: CGFloat = 4.0
+    private var labelTopConstraint: NSLayoutConstraint?
+    private var labelLeadingConstraint: NSLayoutConstraint?
+    private var inputTopToLabelConstraint: NSLayoutConstraint?
+    private var inputTopToSelfConstraint: NSLayoutConstraint?
 
-    // MARK: - WuiComponent Init
+    private let verticalSpacing: CGFloat = 4.0
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let stretchAxis = WuiStretchAxis(waterui_view_stretch_axis(anyview))
         let ffiTextField: CWaterUI.WuiTextField = waterui_force_as_text_field(anyview)
         let labelView = WuiAnyView(anyview: ffiTextField.label, env: env)
-        let binding = WuiBinding<WuiStr>(ffiTextField.value)
+        let binding = WuiBinding<WuiStyledStr>(ffiTextField.value)
         let prompt = WuiComputed<WuiStyledStr>(ffiTextField.prompt.content)
         #if canImport(UIKit)
         self.init(
@@ -88,13 +82,11 @@ final class WuiTextField: PlatformView, WuiComponent {
         #endif
     }
 
-    // MARK: - Designated Init
-
     #if canImport(UIKit)
     init(
         stretchAxis: WuiStretchAxis,
         label: WuiAnyView,
-        binding: WuiBinding<WuiStr>,
+        binding: WuiBinding<WuiStyledStr>,
         prompt: WuiComputed<WuiStyledStr>,
         keyboard: CWaterUI.WuiKeyboardType,
         env: WuiEnvironment
@@ -105,12 +97,11 @@ final class WuiTextField: PlatformView, WuiComponent {
         self.prompt = prompt
         self.keyboard = keyboard
         self.env = env
-        // Initialize with a default frame to prevent constraint conflicts.
         super.init(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         configureSubviews()
-        configureTextField()
+        configureTextInput()
         applyPrompt(prompt.value)
-        textField.text = binding.value.toString()
+        applyBindingValue(binding.value)
         startBindingWatcher()
         startPromptWatcher()
     }
@@ -118,7 +109,7 @@ final class WuiTextField: PlatformView, WuiComponent {
     init(
         stretchAxis: WuiStretchAxis,
         label: WuiAnyView,
-        binding: WuiBinding<WuiStr>,
+        binding: WuiBinding<WuiStyledStr>,
         prompt: WuiComputed<WuiStyledStr>,
         env: WuiEnvironment
     ) {
@@ -127,12 +118,11 @@ final class WuiTextField: PlatformView, WuiComponent {
         self.binding = binding
         self.prompt = prompt
         self.env = env
-        // Initialize with a default frame to prevent constraint conflicts.
         super.init(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         configureSubviews()
-        configureTextField()
+        configureTextInput()
         applyPrompt(prompt.value)
-        textField.stringValue = binding.value.toString()
+        applyBindingValue(binding.value)
         startBindingWatcher()
         startPromptWatcher()
     }
@@ -143,62 +133,66 @@ final class WuiTextField: PlatformView, WuiComponent {
         fatalError("init(coder:) has not been implemented")
     }
 
-    // MARK: - WuiComponent
-
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
-        // TextField is axis-expanding on width per LAYOUT_SPEC.md
-        // It uses isStretch: true to expand, so here we report MINIMUM usable size
         let labelSize = labelView.sizeThatFits(WuiProposalSize())
-        let textFieldHeight = textField.intrinsicContentSize.height
 
-        // Intrinsic height: label height + spacing + text field height
-        let intrinsicHeight = labelSize.height + verticalSpacing + textFieldHeight
+        #if canImport(UIKit)
+        let minTextWidth: CGFloat = 100.0
+        let proposedWidth = proposal.width.map(CGFloat.init) ?? minTextWidth
+        let targetWidth = max(minTextWidth, max(labelSize.width, proposedWidth))
+        let textHeight = max(36.0, textView.sizeThatFits(CGSize(width: targetWidth, height: .greatestFiniteMagnitude)).height)
+        #elseif canImport(AppKit)
+        let textHeight = textField.intrinsicContentSize.height
+        #endif
 
-        // For width: report MINIMUM usable size
-        // The minimum width ensures label fits and text field has reasonable input space
-        let minTextFieldWidth: CGFloat = 100.0
-        let minWidth = max(labelSize.width, minTextFieldWidth)
+        let hasLabel = labelSize.height > 0
+        let spacing = hasLabel ? verticalSpacing : 0
+        let intrinsicHeight = labelSize.height + spacing + textHeight
 
-        // When width is proposed, use it (but not less than minimum)
-        // When None, return minimum - isStretch:true will expand it to fill remaining space
+        let minWidth = max(labelSize.width, 100.0)
         let width = proposal.width.map { max(CGFloat($0), minWidth) } ?? minWidth
         let height = proposal.height.map { CGFloat($0) } ?? intrinsicHeight
 
         return CGSize(width: width, height: max(height, intrinsicHeight))
     }
 
-    // MARK: - Layout
-
     #if canImport(AppKit)
     override var isFlipped: Bool { true }
     #endif
 
-    // MARK: - Update Methods
-
     func updateLabel(_ newLabel: WuiAnyView) {
         guard newLabel !== labelView else { return }
-        labelView.removeFromSuperview()
 
+        labelTopConstraint?.isActive = false
+        labelLeadingConstraint?.isActive = false
+        inputTopToLabelConstraint?.isActive = false
+
+        labelView.removeFromSuperview()
         labelView = newLabel
         labelView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(labelView)
 
-        // Re-establish constraints for new label
+        labelTopConstraint = labelView.topAnchor.constraint(equalTo: topAnchor)
+        labelLeadingConstraint = labelView.leadingAnchor.constraint(equalTo: leadingAnchor)
+        #if canImport(UIKit)
+        inputTopToLabelConstraint = textView.topAnchor.constraint(equalTo: labelView.bottomAnchor, constant: verticalSpacing)
+        #elseif canImport(AppKit)
+        inputTopToLabelConstraint = textField.topAnchor.constraint(equalTo: labelView.bottomAnchor, constant: verticalSpacing)
+        #endif
+
         NSLayoutConstraint.activate([
-            labelView.topAnchor.constraint(equalTo: topAnchor),
-            labelView.leadingAnchor.constraint(equalTo: leadingAnchor),
-        ])
+            labelTopConstraint,
+            labelLeadingConstraint,
+        ].compactMap { $0 })
+
+        updateLabelLayout()
     }
 
-    func updateBinding(_ newBinding: WuiBinding<WuiStr>) {
+    func updateBinding(_ newBinding: WuiBinding<WuiStyledStr>) {
         guard newBinding !== binding else { return }
         bindingWatcher = nil
         binding = newBinding
-        #if canImport(UIKit)
-        textField.text = binding.value.toString()
-        #elseif canImport(AppKit)
-        textField.stringValue = binding.value.toString()
-        #endif
+        applyBindingValue(newBinding.value)
         startBindingWatcher()
     }
 
@@ -213,38 +207,82 @@ final class WuiTextField: PlatformView, WuiComponent {
     #if canImport(UIKit)
     func updateKeyboard(_ newKeyboard: CWaterUI.WuiKeyboardType) {
         keyboard = newKeyboard
-        textField.keyboardType = newKeyboard.uiKeyboardType
+        textView.keyboardType = newKeyboard.uiKeyboardType
+        textView.reloadInputViews()
     }
     #endif
 
-    // MARK: - Configuration
-
     private func configureSubviews() {
-        // Use AutoLayout for internal component layout
         labelView.translatesAutoresizingMaskIntoConstraints = false
-        textField.translatesAutoresizingMaskIntoConstraints = false
-
         addSubview(labelView)
+
+        #if canImport(UIKit)
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(textView)
+        inputTopToSelfConstraint = textView.topAnchor.constraint(equalTo: topAnchor)
+        inputTopToLabelConstraint = textView.topAnchor.constraint(equalTo: labelView.bottomAnchor, constant: verticalSpacing)
+        #elseif canImport(AppKit)
+        textField.translatesAutoresizingMaskIntoConstraints = false
         addSubview(textField)
+        inputTopToSelfConstraint = textField.topAnchor.constraint(equalTo: topAnchor)
+        inputTopToLabelConstraint = textField.topAnchor.constraint(equalTo: labelView.bottomAnchor, constant: verticalSpacing)
+        #endif
 
-        // Layout: label at top-leading, text field below spanning full width
+        labelTopConstraint = labelView.topAnchor.constraint(equalTo: topAnchor)
+        labelLeadingConstraint = labelView.leadingAnchor.constraint(equalTo: leadingAnchor)
+
+        #if canImport(UIKit)
         NSLayoutConstraint.activate([
-            // Label: top-leading
-            labelView.topAnchor.constraint(equalTo: topAnchor),
-            labelView.leadingAnchor.constraint(equalTo: leadingAnchor),
-
-            // Text field: below label, full width
-            textField.topAnchor.constraint(equalTo: labelView.bottomAnchor, constant: verticalSpacing),
+            labelTopConstraint,
+            labelLeadingConstraint,
+            textView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ].compactMap { $0 })
+        #elseif canImport(AppKit)
+        NSLayoutConstraint.activate([
+            labelTopConstraint,
+            labelLeadingConstraint,
             textField.leadingAnchor.constraint(equalTo: leadingAnchor),
             textField.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
+        ].compactMap { $0 })
+        #endif
+
+        updateLabelLayout()
     }
 
-    private func configureTextField() {
+    private func updateLabelLayout() {
+        let labelSize = labelView.sizeThatFits(WuiProposalSize())
+        let hasLabel = labelSize.height > 0
+
+        labelView.isHidden = !hasLabel
+        inputTopToLabelConstraint?.isActive = hasLabel
+        inputTopToSelfConstraint?.isActive = !hasLabel
+    }
+
+    private func configureTextInput() {
         #if canImport(UIKit)
-        textField.borderStyle = .roundedRect
-        textField.keyboardType = keyboard.uiKeyboardType
-        textField.addTarget(self, action: #selector(valueChanged), for: .editingChanged)
+        textView.keyboardType = keyboard.uiKeyboardType
+        textView.delegate = self
+        textView.isScrollEnabled = false
+        textView.textContainer.maximumNumberOfLines = 1
+        textView.textContainer.lineBreakMode = .byTruncatingTail
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        textView.textContainer.lineFragmentPadding = 0
+        textView.layer.cornerRadius = 10
+        textView.layer.borderWidth = 1
+        textView.layer.borderColor = UIColor.separator.cgColor
+        textView.backgroundColor = UIColor.secondarySystemBackground
+
+        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        placeholderLabel.numberOfLines = 1
+        placeholderLabel.backgroundColor = .clear
+        textView.addSubview(placeholderLabel)
+
+        NSLayoutConstraint.activate([
+            placeholderLabel.leadingAnchor.constraint(equalTo: textView.leadingAnchor, constant: textView.textContainerInset.left),
+            placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: textView.trailingAnchor, constant: -textView.textContainerInset.right),
+            placeholderLabel.topAnchor.constraint(equalTo: textView.topAnchor, constant: textView.textContainerInset.top),
+        ])
         #elseif canImport(AppKit)
         textField.isBordered = true
         textField.bezelStyle = .roundedBezel
@@ -254,13 +292,28 @@ final class WuiTextField: PlatformView, WuiComponent {
         #endif
     }
 
+    private func applyBindingValue(_ styled: WuiStyledStr) {
+        #if canImport(UIKit)
+        let attributed = styled.toAttributedString(env: env)
+        if textView.attributedText.isEqual(to: attributed) {
+            updatePlaceholderVisibility()
+            return
+        }
+        let selected = textView.selectedRange
+        textView.attributedText = attributed
+        let length = textView.attributedText.length
+        textView.selectedRange = NSRange(location: min(selected.location, length), length: 0)
+        updatePlaceholderVisibility()
+        #elseif canImport(AppKit)
+        textField.attributedStringValue = styled.toAttributedString(env: env)
+        #endif
+    }
+
     private func applyPrompt(_ styled: WuiStyledStr) {
         let attributed = styled.toAttributedString(env: env)
-        // Apply secondary/placeholder color if no foreground color was specified
         let mutableAttributed = NSMutableAttributedString(attributedString: attributed)
         let range = NSRange(location: 0, length: mutableAttributed.length)
 
-        // Check if foreground color is already set
         var hasForegroundColor = false
         mutableAttributed.enumerateAttribute(.foregroundColor, in: range, options: []) { value, _, _ in
             if value != nil {
@@ -268,7 +321,6 @@ final class WuiTextField: PlatformView, WuiComponent {
             }
         }
 
-        // If no foreground color specified, use the standard placeholder color
         if !hasForegroundColor {
             #if canImport(UIKit)
             mutableAttributed.addAttribute(.foregroundColor, value: UIColor.placeholderText, range: range)
@@ -278,7 +330,8 @@ final class WuiTextField: PlatformView, WuiComponent {
         }
 
         #if canImport(UIKit)
-        textField.attributedPlaceholder = mutableAttributed
+        placeholderLabel.attributedText = mutableAttributed
+        updatePlaceholderVisibility()
         #elseif canImport(AppKit)
         textField.placeholderAttributedString = mutableAttributed
         #endif
@@ -287,18 +340,9 @@ final class WuiTextField: PlatformView, WuiComponent {
     private func startBindingWatcher() {
         bindingWatcher = binding.watch { [weak self] newValue, _ in
             guard let self else { return }
-            let newText = newValue.toString()
-            #if canImport(UIKit)
-            if textField.text == newText { return }
-            #elseif canImport(AppKit)
-            if textField.stringValue == newText { return }
-            #endif
+            guard !isSyncingFromBinding else { return }
             isSyncingFromBinding = true
-            #if canImport(UIKit)
-            textField.text = newText
-            #elseif canImport(AppKit)
-            textField.stringValue = newText
-            #endif
+            applyBindingValue(newValue)
             isSyncingFromBinding = false
         }
     }
@@ -310,18 +354,44 @@ final class WuiTextField: PlatformView, WuiComponent {
     }
 
     #if canImport(UIKit)
-    @objc private func valueChanged() {
-        guard !isSyncingFromBinding else { return }
-        binding.value = WuiStr(string: textField.text ?? "")
+    private func updatePlaceholderVisibility() {
+        placeholderLabel.isHidden = !textView.text.isEmpty
     }
     #endif
 }
+
+#if canImport(UIKit)
+extension WuiTextField: UITextViewDelegate {
+    func textViewDidChange(_ textView: UITextView) {
+        guard !isSyncingFromBinding else { return }
+        if textView.markedTextRange != nil {
+            updatePlaceholderVisibility()
+            return
+        }
+        let attributed = textView.attributedText ?? NSAttributedString(string: "")
+        binding.set(WuiStyledStr.fromAttributedString(attributed))
+        updatePlaceholderVisibility()
+    }
+
+    func textView(
+        _ textView: UITextView,
+        shouldChangeTextIn range: NSRange,
+        replacementText text: String
+    ) -> Bool {
+        if text.contains("\n") {
+            // Keep single-line contract, but don't block IME composition updates.
+            return textView.markedTextRange != nil
+        }
+        return true
+    }
+}
+#endif
 
 #if canImport(AppKit)
 extension WuiTextField: NSTextFieldDelegate {
     func controlTextDidChange(_ obj: Notification) {
         guard !isSyncingFromBinding else { return }
-        binding.value = WuiStr(string: textField.stringValue)
+        binding.set(WuiStyledStr.fromAttributedString(textField.attributedStringValue))
     }
 }
 #endif

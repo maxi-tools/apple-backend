@@ -40,8 +40,17 @@ final class WuiMaterialBackground: PlatformView, WuiComponent {
         self.blurView = UIVisualEffectView(effect: blurEffect)
         #elseif canImport(AppKit)
         self.blurView = NSVisualEffectView()
-        blurView.material = Self.nsMaterial(from: metadata.material)
-        blurView.blendingMode = .behindWindow
+        let material = Self.nsMaterial(from: metadata.material)
+        blurView.material = material
+        // Match typical AppKit/SF Symbols vibrancy behavior:
+        // - Titlebar/HUD materials blend behind the window
+        // - Sidebar/content materials blend within the window
+        switch material {
+        case .titlebar, .hudWindow:
+            blurView.blendingMode = .behindWindow
+        default:
+            blurView.blendingMode = .withinWindow
+        }
         blurView.state = .active
         #endif
 

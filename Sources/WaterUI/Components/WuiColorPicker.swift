@@ -22,6 +22,7 @@ final class WuiColorPicker: PlatformView, WuiComponent {
     private let colorWell: UIColorWell
     private var labelView: WuiAnyView
     private var binding: WuiBinding<OpaquePointer>
+    private var bindingWatcher: WatcherGuard?
     private var env: WuiEnvironment
     private var supportAlpha: Bool
     private var supportHdr: Bool
@@ -123,7 +124,7 @@ final class WuiColorPicker: PlatformView, WuiComponent {
     }
 
     private func startBindingWatcher() {
-        _ = binding.watch { [weak self] colorPtr, _ in
+        bindingWatcher = binding.watch { [weak self] colorPtr, _ in
             guard let self, !isSyncingFromBinding else { return }
             isSyncingFromBinding = true
             let color = self.resolveColor(colorPtr)
@@ -197,6 +198,7 @@ final class WuiColorPicker: PlatformView, WuiComponent {
     private let colorWell: NSColorWell
     private var labelView: WuiAnyView
     private var binding: WuiBinding<OpaquePointer>
+    private var bindingWatcher: WatcherGuard?
     private var env: WuiEnvironment
     private var supportAlpha: Bool
     private var supportHdr: Bool
@@ -311,7 +313,7 @@ final class WuiColorPicker: PlatformView, WuiComponent {
     }
 
     private func startBindingWatcher() {
-        _ = binding.watch { [weak self] colorPtr, _ in
+        bindingWatcher = binding.watch { [weak self] colorPtr, _ in
             guard let self, !isSyncingFromBinding else { return }
             isSyncingFromBinding = true
             let color = self.resolveColor(colorPtr)

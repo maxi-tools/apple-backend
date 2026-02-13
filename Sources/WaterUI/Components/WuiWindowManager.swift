@@ -145,6 +145,24 @@ final class WindowManagerImpl {
             window.styleMask.remove(.closable)
         }
 
+        // Optional toolbar content rendered in the titlebar.
+        // This uses NSTitlebarAccessoryViewController so the toolbar automatically
+        // benefits from the system titlebar materials (macOS “liquid glass”).
+        if let rawToolbar = wuiWindow.toolbar {
+            let toolbarPtr = OpaquePointer(UnsafeMutableRawPointer(rawToolbar))
+            let toolbarView = WuiAnyView(anyview: toolbarPtr, env: globalEnv)
+
+            let accessory = NSTitlebarAccessoryViewController()
+            accessory.view = toolbarView
+            accessory.layoutAttribute = .top
+            window.addTitlebarAccessoryViewController(accessory)
+
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+
+            objc_setAssociatedObject(window, "windowToolbarAccessory", accessory, .OBJC_ASSOCIATION_RETAIN)
+        }
+
         // Create content view by rendering the WuiAnyView with the global environment
         let contentView = WuiAnyView(anyview: contentPtr, env: globalEnv)
 

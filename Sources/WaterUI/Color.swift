@@ -66,18 +66,31 @@ private func wuiSupportsExtendedRange() -> Bool {
 
 @MainActor
 class WuiColor {
-    var inner: OpaquePointer
+    private var inner: OpaquePointer?
     init(_ inner: OpaquePointer) {
         self.inner = inner
     }
 
     func resolve(in env: WuiEnvironment) -> WuiComputed<WuiResolvedColor> {
+        guard let inner else {
+            fatalError("WuiColor pointer was already consumed")
+        }
         let computed = waterui_resolve_color(inner, env.inner)
         return WuiComputed(computed!)
     }
 
+    func intoInner() -> OpaquePointer {
+        guard let inner else {
+            fatalError("WuiColor pointer was already consumed")
+        }
+        self.inner = nil
+        return inner
+    }
+
     @MainActor deinit {
-        waterui_drop_color(inner)
+        if let inner {
+            waterui_drop_color(inner)
+        }
     }
 }
 

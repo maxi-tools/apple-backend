@@ -8,6 +8,24 @@
 import CWaterUI
 import Foundation
 
+@_silgen_name("waterui_read_binding_styled_str")
+private func wui_read_binding_styled_str(_ binding: OpaquePointer?) -> CWaterUI.WuiStyledStr
+
+@_silgen_name("waterui_watch_binding_styled_str")
+private func wui_watch_binding_styled_str(
+    _ binding: OpaquePointer?,
+    _ watcher: OpaquePointer?
+) -> OpaquePointer?
+
+@_silgen_name("waterui_drop_binding_styled_str")
+private func wui_drop_binding_styled_str(_ binding: OpaquePointer?)
+
+@_silgen_name("waterui_set_binding_styled_str_plain")
+private func wui_set_binding_styled_str_plain(_ binding: OpaquePointer?, _ value: CWaterUI.WuiStr)
+
+@_silgen_name("waterui_set_binding_styled_str")
+private func wui_set_binding_styled_str(_ binding: OpaquePointer?, _ value: CWaterUI.WuiStyledStr)
+
 @MainActor
 final class WuiBinding<T> {
     private var inner: OpaquePointer
@@ -107,6 +125,29 @@ extension WuiBinding where T == WuiStr {
             },
             drop: waterui_drop_binding_secure
         )
+    }
+}
+
+extension WuiBinding where T == WuiStyledStr {
+    convenience init(_ inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: { inner in WuiStyledStr(wui_read_binding_styled_str(inner)) },
+            watch: { inner, f in
+                let g = wui_watch_binding_styled_str(inner, makeStyledStrWatcher(f))
+                return WatcherGuard(g!)
+            },
+            set: { inner, value in
+                var owned = value
+                wui_set_binding_styled_str(inner, owned.intoInner())
+            },
+            drop: wui_drop_binding_styled_str
+        )
+    }
+
+    func setPlain(_ plain: String) {
+        let text = WuiStr(string: plain)
+        wui_set_binding_styled_str_plain(inner, text.intoInner())
     }
 }
 

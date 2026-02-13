@@ -246,8 +246,9 @@ final class WuiProgress: PlatformView, WuiComponent {
     private func startWatcher() {
         watcher = value.watch { [weak self] newValue, metadata in
             guard let self else { return }
-            let animation = parseAnimation(metadata.getAnimation())
-            updateAppearance(for: newValue, animated: shouldAnimate(animation))
+            withPlatformAnimation(metadata) {
+                self.updateAppearance(for: newValue)
+            }
         }
     }
 
@@ -259,7 +260,7 @@ final class WuiProgress: PlatformView, WuiComponent {
         #endif
     }
 
-    private func updateAppearance(for value: Double, animated: Bool = false) {
+    private func updateAppearance(for value: Double) {
         let isIndeterminate = value.isInfinite || style == WuiProgressStyle_Circular
 
         #if canImport(UIKit)
@@ -272,13 +273,7 @@ final class WuiProgress: PlatformView, WuiComponent {
             activityIndicator.isHidden = true
             progressView.isHidden = false
             let clamped = Float(min(max(value, 0.0), 1.0))
-            if animated {
-                UIView.animate(withDuration: 0.2) {
-                    self.progressView.progress = clamped
-                }
-            } else {
-                progressView.progress = clamped
-            }
+            progressView.progress = clamped
         }
         #elseif canImport(AppKit)
         if isIndeterminate {
@@ -292,15 +287,7 @@ final class WuiProgress: PlatformView, WuiComponent {
             progressIndicator.minValue = 0.0
             progressIndicator.maxValue = 1.0
             let clamped = min(max(value, 0.0), 1.0)
-            if animated {
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.2
-                    context.allowsImplicitAnimation = true
-                    progressIndicator.doubleValue = clamped
-                }
-            } else {
-                progressIndicator.doubleValue = clamped
-            }
+            progressIndicator.doubleValue = clamped
         }
         #endif
     }

@@ -134,25 +134,15 @@ final class WuiScale: PlatformView, WuiComponent {
 
         let caAnimation: CABasicAnimation
         switch resolvedAnimation {
-        case .linear(let duration):
+        case .bezier(let duration, let x1, let y1, let x2, let y2):
             let basic = CABasicAnimation(keyPath: "transform")
             basic.duration = duration
-            basic.timingFunction = CAMediaTimingFunction(name: .linear)
-            caAnimation = basic
-        case .easeIn(let duration):
-            let basic = CABasicAnimation(keyPath: "transform")
-            basic.duration = duration
-            basic.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            caAnimation = basic
-        case .easeOut(let duration):
-            let basic = CABasicAnimation(keyPath: "transform")
-            basic.duration = duration
-            basic.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            caAnimation = basic
-        case .easeInOut(let duration):
-            let basic = CABasicAnimation(keyPath: "transform")
-            basic.duration = duration
-            basic.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            basic.timingFunction = CAMediaTimingFunction(
+                controlPoints: Float(x1),
+                Float(y1),
+                Float(x2),
+                Float(y2)
+            )
             caAnimation = basic
         case .spring(let stiffness, let damping):
             let spring = CASpringAnimation(keyPath: "transform")

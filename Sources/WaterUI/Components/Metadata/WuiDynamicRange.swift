@@ -22,17 +22,20 @@ private enum WuiDynamicRangeAssociatedKeys {
 func applyDynamicRange(_ mode: WuiDynamicRangeMode, to layer: CALayer?) {
     guard let layer else { return }
 
-    objc_setAssociatedObject(layer, &WuiDynamicRangeAssociatedKeys.mode, mode, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    // Keep explicit nested overrides stable: if a sublayer already carries its own mode,
+    // preserve that local mode and propagate from there.
+    let localMode = (objc_getAssociatedObject(layer, &WuiDynamicRangeAssociatedKeys.mode) as? WuiDynamicRangeMode) ?? mode
+    objc_setAssociatedObject(layer, &WuiDynamicRangeAssociatedKeys.mode, localMode, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
     #if canImport(UIKit)
-    layer.preferredDynamicRange = (mode == .high) ? .high : .standard
+    layer.preferredDynamicRange = (localMode == .high) ? .high : .standard
     #elseif canImport(AppKit)
-    layer.preferredDynamicRange = (mode == .high) ? .high : .standard
+    layer.preferredDynamicRange = (localMode == .high) ? .high : .standard
     #endif
 
     if let sublayers = layer.sublayers {
         for sublayer in sublayers {
-            applyDynamicRange(mode, to: sublayer)
+            applyDynamicRange(localMode, to: sublayer)
         }
     }
 }
@@ -86,7 +89,6 @@ final class WuiStandardDynamicRange: PlatformView, WuiComponent {
         addSubview(contentView)
 
         applyDynamicRange(.standard, to: self)
-        applyDynamicRange(.standard, to: contentView)
     }
 
     @available(*, unavailable)
@@ -142,7 +144,6 @@ final class WuiHighDynamicRange: PlatformView, WuiComponent {
         addSubview(contentView)
 
         applyDynamicRange(.high, to: self)
-        applyDynamicRange(.high, to: contentView)
     }
 
     @available(*, unavailable)

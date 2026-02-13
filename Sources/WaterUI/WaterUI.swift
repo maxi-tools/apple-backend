@@ -742,7 +742,6 @@ public final class WuiRootContext {
             // First time - create new environment
             initEnvPtr = waterui_init()
             // Install services into the raw pointer (before ownership transfers)
-            installMediaPickerManager(env: initEnvPtr)
             installWebViewController(env: initEnvPtr)
             installWindowManager(env: initEnvPtr)
             installViewRenderer(env: initEnvPtr)

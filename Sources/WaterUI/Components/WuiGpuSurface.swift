@@ -157,16 +157,11 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Send current pointer state to the GPU surface before rendering.
-    private func syncPointerState() {
+    /// Send current pointer + gesture state to the GPU surface before rendering.
+    private func syncInputState() {
         guard let state = gpuState else { return }
-        waterui_gpu_surface_set_pointer(state, pointerState)
-    }
-
-    /// Send current gesture state to the GPU surface before rendering.
-    private func syncGestureState() {
-        guard let state = gpuState else { return }
-        waterui_gpu_surface_set_gesture(state, gestureState)
+        let input = WuiGpuSurfaceInput(pointer: pointerState, gesture: gestureState)
+        waterui_gpu_surface_set_input(state, input)
         // Clear double_tap after sending (it's a one-frame signal)
         clearDoubleTap()
     }
@@ -279,8 +274,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         renderQueue.async { [weak self] in
             guard let self else { return }
             // Sync pointer and gesture state before rendering
-            self.syncPointerState()
-            self.syncGestureState()
+            self.syncInputState()
             guard let state = OpaquePointer(bitPattern: stateAddr) else {
                 self.lock.lock()
                 self.renderInFlight = false
@@ -345,8 +339,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
 
         let renderBlock = { [weak self] () -> Bool in
             guard let self else { return false }
-            self.syncPointerState()
-            self.syncGestureState()
+            self.syncInputState()
             let ok = waterui_gpu_surface_render_to_texture(state, texturePtr, width, height)
             self.lock.lock()
             self.renderInFlight = false
@@ -392,8 +385,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
 
         let renderBlock = { [weak self] () -> Bool in
             guard let self else { return false }
-            self.syncPointerState()
-            self.syncGestureState()
+            self.syncInputState()
             let ok = waterui_gpu_surface_render_to_metal_texture(state, texturePtr, width, height)
             self.lock.lock()
             self.renderInFlight = false
@@ -660,6 +652,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 
     /// Content scale factor for high-DPI displays
     private var currentScaleFactor: CGFloat = 1.0
+    private var configuredDynamicRangeMode: WuiDynamicRangeMode?
 
     /// Gesture tracking state
     private var gestureStartScale: CGFloat = 1.0
@@ -1088,8 +1081,9 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             metalLayer.backgroundColor = NSColor.clear.cgColor  // Ensure no black background
         #endif
 
-        // Configure HDR support if available
-        configureHDR()
+        // Configure a default dynamic range. The final mode is resolved from metadata
+        // in initializeGpuIfNeeded() after the view is attached to the hierarchy.
+        configureDynamicRange(.high)
 
         #if canImport(UIKit)
             // iOS/tvOS: Add metal layer as sublayer
@@ -1105,18 +1099,36 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         #endif
     }
 
-    /// Configure the metal layer for HDR rendering
-    private func configureHDR() {
-        // Use Rgba16Float for HDR support (must match Rust side)
-        metalLayer.pixelFormat = .rgba16Float
-        metalLayer.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
-        metalLayer.wantsExtendedDynamicRangeContent = true
+    /// Configure the metal layer for dynamic range rendering.
+    private func configureDynamicRange(_ mode: WuiDynamicRangeMode) {
+        applyDynamicRange(mode, to: self)
+        applyDynamicRange(mode, to: metalLayer)
+
+        guard configuredDynamicRangeMode != mode else { return }
+        guard !isGpuInitialized else { return }
+
+        if mode == .high {
+            // HDR surface (must match Rust-side preferred format selection).
+            metalLayer.pixelFormat = .rgba16Float
+            metalLayer.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
+            metalLayer.wantsExtendedDynamicRangeContent = true
+        } else {
+            // Force SDR for this subtree.
+            metalLayer.pixelFormat = .bgra8Unorm_srgb
+            metalLayer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
+            metalLayer.wantsExtendedDynamicRangeContent = false
+        }
+        configuredDynamicRangeMode = mode
     }
 
     // MARK: - GPU Initialization
 
     private func initializeGpuIfNeeded() {
         guard bounds.width > 0 && bounds.height > 0 else { return }
+
+        // Dynamic range metadata is resolved from the nearest ancestor and can be
+        // overridden by nested wrappers (last one wins).
+        configureDynamicRange(resolveDynamicRange(for: self))
 
         #if canImport(UIKit)
             currentScaleFactor = contentScaleFactor

@@ -295,22 +295,15 @@ final class WuiSlider: PlatformView, WuiComponent {
         bindingWatcher = binding.watch { [weak self] newValue, metadata in
             guard let self else { return }
             let clamped = clampedValue(newValue)
-            let animation = parseAnimation(metadata.getAnimation())
-            let animated = shouldAnimate(animation)
             #if canImport(UIKit)
             let clampedFloat = Float(clamped)
             if slider.value == clampedFloat { return }
+            let animated = shouldAnimate(parseAnimation(metadata.getAnimation()))
             slider.setValue(clampedFloat, animated: animated)
             #elseif canImport(AppKit)
             if slider.doubleValue == clamped { return }
-            if animated {
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.2
-                    context.allowsImplicitAnimation = true
-                    slider.doubleValue = clamped
-                }
-            } else {
-                slider.doubleValue = clamped
+            withPlatformAnimation(metadata) {
+                self.slider.doubleValue = clamped
             }
             #endif
         }

@@ -170,7 +170,10 @@ final class WuiTable: PlatformView, WuiComponent {
                 guard let data = data else { return }
                 let table = Unmanaged<WuiTable>.fromOpaque(data).takeUnretainedValue()
                 MainActor.assumeIsolated {
-                    table.loadColumns()
+                    let watcherMetadata = WuiWatcherMetadata(metadata)
+                    withPlatformAnimation(watcherMetadata) {
+                        table.loadColumns()
+                    }
                 }
             },
             nil
@@ -426,7 +429,10 @@ final class WuiTable: PlatformView, WuiComponent {
                 guard let data = data else { return }
                 let table = Unmanaged<WuiTable>.fromOpaque(data).takeUnretainedValue()
                 MainActor.assumeIsolated {
-                    table.loadColumns()
+                    let watcherMetadata = WuiWatcherMetadata(metadata)
+                    withPlatformAnimation(watcherMetadata) {
+                        table.loadColumns()
+                    }
                 }
             },
             nil
