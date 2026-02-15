@@ -158,6 +158,7 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
     private(set) var stretchAxis: WuiStretchAxis = .both
 
     private let childEnv: WuiEnvironment
+    private let transition: WuiNavigationTransition
     private var wrapper: NavigationControllerWrapper?
 
     #if canImport(UIKit)
@@ -243,6 +244,7 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
             rootView: rootView,
             rootBarState: rootBarState,
             rootDisplayMode: rootDisplayMode,
+            transition: ffiStack.transition,
             childEnv: childEnv,
             wrapper: wrapper
         )
@@ -254,9 +256,11 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
         rootView: WuiAnyView,
         rootBarState: WuiNavigationBarState?,
         rootDisplayMode: WuiNavigationTitleDisplayMode,
+        transition: WuiNavigationTransition,
         childEnv: WuiEnvironment,
         wrapper: NavigationControllerWrapper
     ) {
+        self.transition = transition
         self.childEnv = childEnv
         self.wrapper = wrapper
         super.init(frame: .zero)
@@ -311,7 +315,7 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
         // Extract and convert display mode
         let displayMode = convertDisplayMode(navView.bar.display_mode)
         let vc = makeViewController(for: contentView, barState: barState, displayMode: displayMode)
-        navController.pushViewController(vc, animated: true)
+        pushViewController(vc)
         viewStack.append(vc)
         #elseif canImport(AppKit)
         // For macOS, push content directly - toolbar handles navigation chrome
@@ -381,17 +385,21 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
         // Add new view
         view.translatesAutoresizingMaskIntoConstraints = true
         view.frame = bounds
-        view.alphaValue = 0
+        view.alphaValue = (transition == WuiNavigationTransition_None) ? 1 : 0
         addSubview(view)
         viewStack.append(NavigationEntry(view: view, title: title))
 
         // Update titlebar state (window title, back button)
         updateTitlebarState()
 
-        // Animate in
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.25
-            view.animator().alphaValue = 1
+        if transition == WuiNavigationTransition_None {
+            view.alphaValue = 1
+        } else {
+            // Animate in
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.25
+                view.animator().alphaValue = 1
+            }
         }
     }
 
@@ -404,15 +412,19 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
         // Update titlebar state before animation
         updateTitlebarState()
 
-        // Animate out
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.25
-            currentView.animator().alphaValue = 0
-        }, completionHandler: {
-            Task { @MainActor in
-                currentView.removeFromSuperview()
-            }
-        })
+        if transition == WuiNavigationTransition_None {
+            currentView.removeFromSuperview()
+        } else {
+            // Animate out
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.25
+                currentView.animator().alphaValue = 0
+            }, completionHandler: {
+                Task { @MainActor in
+                    currentView.removeFromSuperview()
+                }
+            })
+        }
 
         // Show previous view
         if let previousView = viewStack.last?.view {
@@ -472,7 +484,7 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
     func handlePop() {
         #if canImport(UIKit)
         guard viewStack.count > 1 else { return }
-        navController.popViewController(animated: true)
+        popViewController()
         viewStack.removeLast()
         #elseif canImport(AppKit)
         popView()
@@ -480,6 +492,43 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
     }
 
     #if canImport(UIKit)
+    private func pushViewController(_ vc: UIViewController) {
+        switch transition {
+        case WuiNavigationTransition_PushPop:
+            navController.pushViewController(vc, animated: true)
+        case WuiNavigationTransition_Fade:
+            addFadeTransition(to: navController.view.layer)
+            navController.pushViewController(vc, animated: false)
+        case WuiNavigationTransition_None:
+            navController.pushViewController(vc, animated: false)
+        default:
+            navController.pushViewController(vc, animated: true)
+        }
+    }
+
+    private func popViewController() {
+        switch transition {
+        case WuiNavigationTransition_PushPop:
+            navController.popViewController(animated: true)
+        case WuiNavigationTransition_Fade:
+            addFadeTransition(to: navController.view.layer)
+            navController.popViewController(animated: false)
+        case WuiNavigationTransition_None:
+            navController.popViewController(animated: false)
+        default:
+            navController.popViewController(animated: true)
+        }
+    }
+
+    private func addFadeTransition(to layer: CALayer?) {
+        guard let layer else { return }
+        let transition = CATransition()
+        transition.type = .fade
+        transition.duration = 0.25
+        transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(transition, forKey: "waterui.navigation.fade")
+    }
+
     private func makeViewController(
         for view: UIView,
         barState: WuiNavigationBarState?,

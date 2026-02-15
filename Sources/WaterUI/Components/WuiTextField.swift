@@ -39,11 +39,14 @@ final class WuiTextField: PlatformView, WuiComponent {
 
     private var bindingWatcher: WatcherGuard?
     private var promptWatcher: WatcherGuard?
+    private var selectionMenuWatcher: WatcherGuard?
     private var isSyncingFromBinding = false
 
     private var labelView: WuiAnyView
     private var binding: WuiBinding<WuiStyledStr>
     private var prompt: WuiComputed<WuiStyledStr>
+    private var selectionMenu: WuiComputed<CWaterUI.WuiArray_WuiMenuItem>?
+    private var selectionMenuItems: [SelectionMenuItem] = []
     #if canImport(UIKit)
     private var keyboard: CWaterUI.WuiKeyboardType
     #endif
@@ -62,12 +65,16 @@ final class WuiTextField: PlatformView, WuiComponent {
         let labelView = WuiAnyView(anyview: ffiTextField.label, env: env)
         let binding = WuiBinding<WuiStyledStr>(ffiTextField.value)
         let prompt = WuiComputed<WuiStyledStr>(ffiTextField.prompt.content)
+        let selectionMenu = ffiTextField.selection_menu.map {
+            WuiComputed<CWaterUI.WuiArray_WuiMenuItem>(OpaquePointer(UnsafeMutableRawPointer($0)))
+        }
         #if canImport(UIKit)
         self.init(
             stretchAxis: stretchAxis,
             label: labelView,
             binding: binding,
             prompt: prompt,
+            selectionMenu: selectionMenu,
             keyboard: ffiTextField.keyboard,
             env: env
         )
@@ -77,6 +84,7 @@ final class WuiTextField: PlatformView, WuiComponent {
             label: labelView,
             binding: binding,
             prompt: prompt,
+            selectionMenu: selectionMenu,
             env: env
         )
         #endif
@@ -88,6 +96,7 @@ final class WuiTextField: PlatformView, WuiComponent {
         label: WuiAnyView,
         binding: WuiBinding<WuiStyledStr>,
         prompt: WuiComputed<WuiStyledStr>,
+        selectionMenu: WuiComputed<CWaterUI.WuiArray_WuiMenuItem>?,
         keyboard: CWaterUI.WuiKeyboardType,
         env: WuiEnvironment
     ) {
@@ -95,6 +104,7 @@ final class WuiTextField: PlatformView, WuiComponent {
         self.labelView = label
         self.binding = binding
         self.prompt = prompt
+        self.selectionMenu = selectionMenu
         self.keyboard = keyboard
         self.env = env
         super.init(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
@@ -104,6 +114,7 @@ final class WuiTextField: PlatformView, WuiComponent {
         applyBindingValue(binding.value)
         startBindingWatcher()
         startPromptWatcher()
+        startSelectionMenuWatcher()
     }
     #elseif canImport(AppKit)
     init(
@@ -111,12 +122,14 @@ final class WuiTextField: PlatformView, WuiComponent {
         label: WuiAnyView,
         binding: WuiBinding<WuiStyledStr>,
         prompt: WuiComputed<WuiStyledStr>,
+        selectionMenu: WuiComputed<CWaterUI.WuiArray_WuiMenuItem>?,
         env: WuiEnvironment
     ) {
         self.stretchAxis = stretchAxis
         self.labelView = label
         self.binding = binding
         self.prompt = prompt
+        self.selectionMenu = selectionMenu
         self.env = env
         super.init(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         configureSubviews()
@@ -125,6 +138,7 @@ final class WuiTextField: PlatformView, WuiComponent {
         applyBindingValue(binding.value)
         startBindingWatcher()
         startPromptWatcher()
+        startSelectionMenuWatcher()
     }
     #endif
 
@@ -353,11 +367,45 @@ final class WuiTextField: PlatformView, WuiComponent {
         }
     }
 
+    private func startSelectionMenuWatcher() {
+        guard let selectionMenu else { return }
+        selectionMenuItems = buildSelectionMenuItems(from: selectionMenu.value)
+        selectionMenuWatcher = selectionMenu.watch { [weak self] rawItems, _ in
+            self?.selectionMenuItems = self?.buildSelectionMenuItems(from: rawItems) ?? []
+        }
+    }
+
+    private func buildSelectionMenuItems(
+        from rawItems: CWaterUI.WuiArray_WuiMenuItem
+    ) -> [SelectionMenuItem] {
+        let items = WuiArray<CWaterUI.WuiMenuItem>(rawItems).toArray()
+        var result: [SelectionMenuItem] = []
+        result.reserveCapacity(items.count)
+
+        for item in items {
+            guard let textPtr = item.label.content else { continue }
+            let label = WuiStyledStr(waterui_read_computed_styled_str(textPtr)).toString()
+            let actionPtr: OpaquePointer? = item.action.map { OpaquePointer(UnsafeRawPointer($0)) }
+            result.append(SelectionMenuItem(label: label, actionPtr: actionPtr))
+        }
+        return result
+    }
+
     #if canImport(UIKit)
     private func updatePlaceholderVisibility() {
         placeholderLabel.isHidden = !textView.text.isEmpty
     }
     #endif
+}
+
+private final class SelectionMenuItem {
+    let label: String
+    let actionPtr: OpaquePointer?
+
+    init(label: String, actionPtr: OpaquePointer?) {
+        self.label = label
+        self.actionPtr = actionPtr
+    }
 }
 
 #if canImport(UIKit)
@@ -383,6 +431,24 @@ extension WuiTextField: UITextViewDelegate {
             return textView.markedTextRange != nil
         }
         return true
+    }
+
+    @available(iOS 16.0, *)
+    func textView(
+        _ textView: UITextView,
+        editMenuForTextIn range: NSRange,
+        suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        guard !selectionMenuItems.isEmpty else { return nil }
+
+        let custom = selectionMenuItems.map { item in
+            UIAction(title: item.label) { [weak self] _ in
+                guard let self, let actionPtr = item.actionPtr else { return }
+                waterui_call_shared_action(actionPtr, self.env.inner)
+            }
+        }
+
+        return UIMenu(title: "", children: suggestedActions + custom)
     }
 }
 #endif

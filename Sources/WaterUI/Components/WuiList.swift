@@ -48,6 +48,9 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
 
     // Track pending deletions to avoid double-animation
     private var pendingDeletions: Set<Int32> = []
+    private var watchedStart: Int = -1
+    private var watchedEnd: Int = -1
+    private let watchOverscan: Int = 20
 
     // MARK: - WuiComponent Init
 
@@ -91,10 +94,7 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
 
         // Initial load + watch structural changes.
         reloadFromRust(animated: false)
-        contentsWatcher = watchAnyViewsIds(contents) { [weak self] ids, metadata in
-            guard let self else { return }
-            self.applyRustUpdate(ids: ids, metadata: metadata)
-        }
+        installContentsWatch(force: true)
     }
 
     @available(*, unavailable)
@@ -114,6 +114,41 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
 
     // MARK: - Item Loading
 
+    private func currentWatchRange() -> (start: Int, end: Int) {
+        let count = Int(waterui_anyviews_len(contents.ptr))
+        guard count > 0 else { return (0, 0) }
+
+        guard let visible = indexPathsForVisibleRows, !visible.isEmpty else {
+            return (0, min(count, (watchOverscan * 2) + 1))
+        }
+
+        let first = visible.map(\.row).min() ?? 0
+        let last = visible.map(\.row).max() ?? first
+        let start = max(0, first - watchOverscan)
+        let end = min(count, last + 1 + watchOverscan)
+        return (start, end)
+    }
+
+    private func installContentsWatch(force: Bool = false) {
+        let range = currentWatchRange()
+        if !force, range.start == watchedStart, range.end == watchedEnd {
+            return
+        }
+
+        watchedStart = range.start
+        watchedEnd = range.end
+        var skipInitialEmission = true
+        contentsWatcher = watchAnyViewsRangeIds(contents, start: range.start, end: range.end) {
+            [weak self] _, metadata in
+            if skipInitialEmission {
+                skipInitialEmission = false
+                return
+            }
+            guard let self else { return }
+            self.reloadFromRust(animated: metadata.animation != nil)
+        }
+    }
+
     private func applyRustUpdate(ids: [Int32], metadata: WuiWatcherMetadata) {
         let animated = metadata.animation != nil
         updateFromRust(ids: ids, animated: animated)
@@ -121,11 +156,7 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
 
     private func reloadFromRust(animated: Bool) {
         let count = Int(waterui_anyviews_len(contents.ptr))
-        var ids: [Int32] = []
-        ids.reserveCapacity(count)
-        for i in 0..<count {
-            ids.append(waterui_anyviews_get_id(contents.ptr, UInt(i)).inner)
-        }
+        let ids = contents.getIds(start: 0, end: count)
         updateFromRust(ids: ids, animated: animated)
     }
 
@@ -220,6 +251,11 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
         let width = proposal.width.map { CGFloat($0) } ?? UIScreen.main.bounds.width
         let height = proposal.height.map { CGFloat($0) } ?? UIScreen.main.bounds.height
         return CGSize(width: width, height: height)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        installContentsWatch()
     }
 
     // MARK: - UITableViewDataSource
@@ -322,6 +358,10 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
     func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
         return UITableView.automaticDimension
     }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        installContentsWatch()
+    }
 }
 
 // MARK: - WuiListCell
@@ -389,6 +429,9 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
     // Callbacks
     private var onDeletePtr: OpaquePointer?
     private var onMovePtr: OpaquePointer?
+    private var watchedStart: Int = -1
+    private var watchedEnd: Int = -1
+    private let watchOverscan: Int = 20
 
     // Pasteboard type for drag-and-drop
     private static let dragType = NSPasteboard.PasteboardType("dev.waterui.listitem")
@@ -435,6 +478,13 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
         hasVerticalScroller = true
         autohidesScrollers = true
         drawsBackground = false
+        contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(visibleBoundsDidChange),
+            name: NSView.boundsDidChangeNotification,
+            object: contentView
+        )
 
         // Setup editing state if provided
         if let editingPtr = ffiList.editing {
@@ -452,10 +502,7 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
 
         // Initial load + watch structural changes.
         reloadFromRust(animated: false)
-        contentsWatcher = watchAnyViewsIds(contents) { [weak self] ids, metadata in
-            guard let self else { return }
-            self.applyRustUpdate(ids: ids, metadata: metadata)
-        }
+        installContentsWatch(force: true)
     }
 
     @available(*, unavailable)
@@ -464,6 +511,8 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
     }
 
     @MainActor deinit {
+        NotificationCenter.default.removeObserver(self)
+
         // Drop action pointers if they exist
         if let ptr = onDeletePtr {
             waterui_drop_index_action(ptr)
@@ -475,6 +524,47 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
 
     // MARK: - Item Loading
 
+    @objc
+    private func visibleBoundsDidChange() {
+        installContentsWatch()
+    }
+
+    private func currentWatchRange() -> (start: Int, end: Int) {
+        let count = Int(waterui_anyviews_len(contents.ptr))
+        guard count > 0 else { return (0, 0) }
+
+        let visibleRows = tableView.rows(in: documentVisibleRect)
+        if visibleRows.location == NSNotFound || visibleRows.length == 0 {
+            return (0, min(count, (watchOverscan * 2) + 1))
+        }
+
+        let first = visibleRows.location
+        let last = visibleRows.location + max(0, visibleRows.length - 1)
+        let start = max(0, first - watchOverscan)
+        let end = min(count, last + 1 + watchOverscan)
+        return (start, end)
+    }
+
+    private func installContentsWatch(force: Bool = false) {
+        let range = currentWatchRange()
+        if !force, range.start == watchedStart, range.end == watchedEnd {
+            return
+        }
+
+        watchedStart = range.start
+        watchedEnd = range.end
+        var skipInitialEmission = true
+        contentsWatcher = watchAnyViewsRangeIds(contents, start: range.start, end: range.end) {
+            [weak self] _, metadata in
+            if skipInitialEmission {
+                skipInitialEmission = false
+                return
+            }
+            guard let self else { return }
+            self.reloadFromRust(animated: metadata.animation != nil)
+        }
+    }
+
     private func applyRustUpdate(ids: [Int32], metadata: WuiWatcherMetadata) {
         let animated = metadata.animation != nil
         updateFromRust(ids: ids, animated: animated)
@@ -482,11 +572,7 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
 
     private func reloadFromRust(animated: Bool) {
         let count = Int(waterui_anyviews_len(contents.ptr))
-        var ids: [Int32] = []
-        ids.reserveCapacity(count)
-        for i in 0..<count {
-            ids.append(waterui_anyviews_get_id(contents.ptr, UInt(i)).inner)
-        }
+        let ids = contents.getIds(start: 0, end: count)
         updateFromRust(ids: ids, animated: animated)
     }
 

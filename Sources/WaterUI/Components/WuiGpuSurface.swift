@@ -281,9 +281,12 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
                 self.lock.unlock()
                 return
             }
-            _ = waterui_gpu_surface_render(state, width, height)
+            let result = waterui_gpu_surface_render(state, width, height)
             self.lock.lock()
             self.renderInFlight = false
+            if !result.ok || result.needs_redraw {
+                self.needsRender = true
+            }
             let shouldContinue = self.needsRender
             self.lock.unlock()
 
@@ -618,7 +621,6 @@ private final class WuiGpuSurfaceDisplayLinkHub {
 @MainActor
 final class WuiGpuSurface: PlatformView, WuiComponent {
     static var rawId: CWaterUI.WuiTypeId { waterui_gpu_surface_id() }
-    private let renderMode: UInt32
 
     private(set) var stretchAxis: WuiStretchAxis = .both
 
@@ -671,7 +673,6 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 
 		    init(stretchAxis: WuiStretchAxis, ffiSurface: CWaterUI.WuiGpuSurface) {
 		        self.stretchAxis = stretchAxis
-		        self.renderMode = ffiSurface.render_mode
 		        self.renderState = WuiGpuSurfaceRenderState(ffiSurface: ffiSurface)
 
 	        super.init(frame: .zero)
@@ -1072,8 +1073,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         metalLayer.device = device
         metalLayer.framebufferOnly = false  // Allow texture readback for preview capture
         // Keep drawable count low for on-demand surfaces (memory + drawable pressure).
-        // Continuous surfaces benefit from triple-buffering for smooth 120fps.
-        metalLayer.maximumDrawableCount = (renderMode == 0) ? 3 : 2
+        metalLayer.maximumDrawableCount = 2
         metalLayer.isOpaque = false  // Allow transparency for compositing with background
         #if canImport(UIKit)
             metalLayer.backgroundColor = UIColor.clear.cgColor  // Ensure no black background
@@ -1156,7 +1156,6 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 	            guard let self else { return }
 	            guard success else { return }
 	            self.isGpuInitialized = true
-	            self.updateDisplayLinkState()
 	            // Trigger first frames immediately. On-demand surfaces don't have a display link,
 	            // so a transient swapchain timeout could otherwise leave them blank until another
 	            // event marks them dirty.
@@ -1223,9 +1222,6 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         // Always request a frame immediately.
         renderFrame(force: true)
 
-        // Continuous surfaces will be driven by the display link; only add retries for on-demand.
-        guard renderMode != 0 else { return }
-
         // Schedule a couple of forced retries to survive early drawable timeouts on macOS.
         // Keep this cheap: solid colors are fast and this only runs at init time.
         let retryDelays: [DispatchTimeInterval] = [.milliseconds(16), .milliseconds(80)]
@@ -1253,20 +1249,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 	    }
 
     private func updateDisplayLinkState() {
-        guard isGpuInitialized else { return }
-        guard renderMode == 0 else {
-            stopDisplayLink()
-            return
-        }
-        if externalRendering {
-            stopDisplayLink()
-            return
-        }
-        if isEffectivelyVisible() {
-            startDisplayLink()
-        } else {
-            stopDisplayLink()
-        }
+        stopDisplayLink()
     }
 
 	    func setExternalRendering(_ enabled: Bool) {
