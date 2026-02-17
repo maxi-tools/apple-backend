@@ -244,21 +244,12 @@ final class WindowManagerImpl {
         contentView.frame = containerView.bounds
         contentView.autoresizingMask = [.width, .height]
         contentView.needsLayout = true
-
-        // Set minimum window size based on content's minimum size
-        // This prevents the window from being resized smaller than its content can handle
-        let minSize = contentView.sizeThatFits(WuiProposalSize(width: 0, height: 0))
-        if minSize.width > 0 && minSize.height > 0 {
-            window.contentMinSize = minSize
-        }
+        contentView.refreshWindowMinSize(force: true)
 
         // IMPORTANT (GpuSurface first frame on macOS):
         // CAMetalLayer-backed swapchains often can't produce a drawable until the window is
-        // actually on-screen. If we "wait for ready" before showing the window, the first
-        // `get_current_texture()` can time out and surfaces will still appear later.
-        //
-        // Strategy: show the window immediately but fully transparent, warm up all GpuSurfaces,
-        // then fade in to avoid visible "pop-in".
+        // actually on-screen. To keep native/GPU content appearing consistently, keep the window
+        // transparent while warm-up runs, then reveal once ready() completes.
         window.center()
         window.alphaValue = 0.0
         window.makeKeyAndOrderFront(nil)
@@ -359,6 +350,10 @@ private class WindowDelegate: NSObject, NSWindowDelegate {
         resources = nil
 
         onClose(window)
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        contentView?.refreshWindowMinSize(force: true)
     }
 }
 

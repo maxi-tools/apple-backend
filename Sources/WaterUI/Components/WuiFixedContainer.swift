@@ -137,18 +137,6 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
             children: proxies
         )
 
-        // Debug: log layout info if there are more than 2 children (likely a table or complex layout)
-        if childViews.count > 2 {
-            let boundsDesc = bounds.debugDescription
-            let childCount = childViews.count
-            let rectCount = rects.count
-            logger.info("[WuiFixedContainer] bounds=\(boundsDesc), children=\(childCount), rects=\(rectCount)")
-            for (index, rect) in rects.enumerated() {
-                let rectDesc = rect.debugDescription
-                logger.info("  child[\(index)] rect=\(rectDesc)")
-            }
-        }
-
         for (index, rect) in rects.enumerated() {
             guard index < childViews.count else { break }
             var frame = rect

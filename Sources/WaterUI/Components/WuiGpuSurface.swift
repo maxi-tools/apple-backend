@@ -25,6 +25,11 @@ import QuartzCore
     import CoreVideo
 #endif
 
+private struct WuiGpuSurfaceRenderOutcome: Sendable {
+    let success: Bool
+    let needsRedraw: Bool
+}
+
 private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     private final class BoolCompletionBox: @unchecked Sendable {
         let completion: (Bool) -> Void
@@ -67,15 +72,9 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     )
 
     private let lock = NSLock()
-    private let renderQueue = DispatchQueue(
-        label: "waterui.gpu-surface.render",
-        qos: .userInteractive
-    )
-    private let queueKey = DispatchSpecificKey<Void>()
 
     init(ffiSurface: CWaterUI.WuiGpuSurface) {
         self.ffiSurface = ffiSurface
-        renderQueue.setSpecific(key: queueKey, value: ())
     }
 
     /// Update pointer position (in surface-local pixel coordinates).
@@ -207,7 +206,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         let completionBox = BoolCompletionBox(completion)
         let layerAddr = Int(bitPattern: layerPtr)
 
-        renderQueue.async { [weak self] in
+        WuiSharedRenderQueue.async { [weak self] in
             guard let self else {
                 DispatchQueue.main.async { completionBox.completion(false) }
                 return
@@ -245,23 +244,30 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         }
     }
 
-    func requestRender(force: Bool = false) {
+    @discardableResult
+    func requestRender(
+        force: Bool = false,
+        completion: @escaping @Sendable (WuiGpuSurfaceRenderOutcome) -> Void
+    ) -> Bool {
         lock.lock()
         if !isActive || externalRendering {
             lock.unlock()
-            return
+            return false
         }
 
         if !force {
-            guard needsRender else {
-                lock.unlock()
-                return
+            if !needsRender {
+                guard let state = gpuState, waterui_gpu_surface_needs_redraw(state) else {
+                    lock.unlock()
+                    return false
+                }
+                needsRender = true
             }
         }
 
         guard let state = gpuState, width > 0, height > 0, !renderInFlight else {
             lock.unlock()
-            return
+            return false
         }
 
         renderInFlight = true
@@ -271,7 +277,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         let height = self.height
         lock.unlock()
 
-        renderQueue.async { [weak self] in
+        WuiSharedRenderQueue.async { [weak self] in
             guard let self else { return }
             // Sync pointer and gesture state before rendering
             self.syncInputState()
@@ -279,6 +285,9 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
                 self.lock.lock()
                 self.renderInFlight = false
                 self.lock.unlock()
+                DispatchQueue.main.async {
+                    completion(WuiGpuSurfaceRenderOutcome(success: false, needsRedraw: false))
+                }
                 return
             }
             let result = waterui_gpu_surface_render(state, width, height)
@@ -290,19 +299,24 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
             let shouldContinue = self.needsRender
             self.lock.unlock()
 
-            // If we became dirty while a render was in-flight, drain one more frame so
-            // on-demand surfaces don't stall until the next external event.
-            if shouldContinue {
-                self.requestRender(force: false)
+            DispatchQueue.main.async {
+                completion(
+                    WuiGpuSurfaceRenderOutcome(success: result.ok, needsRedraw: shouldContinue)
+                )
             }
         }
+        return true
+    }
+
+    func requiresRedrawPolling() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isActive, let state = gpuState else { return false }
+        return waterui_gpu_surface_requires_redraw_poll(state)
     }
 
     func waitForIdle() {
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
-            return
-        }
-        renderQueue.sync {}
+        WuiSharedRenderQueue.drain()
     }
 
     func setExternalRendering(_ enabled: Bool) {
@@ -350,15 +364,11 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
             return ok
         }
 
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
+        if WuiSharedRenderQueue.isCurrent {
             return renderBlock()
         }
 
-        var ok = false
-        renderQueue.sync {
-            ok = renderBlock()
-        }
-        return ok
+        return WuiSharedRenderQueue.sync { renderBlock() }
     }
 
     func renderToMetalTexture(texturePtr: UnsafeMutableRawPointer, width: UInt32, height: UInt32) -> Bool {
@@ -396,15 +406,11 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
             return ok
         }
 
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
+        if WuiSharedRenderQueue.isCurrent {
             return renderBlock()
         }
 
-        var ok = false
-        renderQueue.sync {
-            ok = renderBlock()
-        }
-        return ok
+        return WuiSharedRenderQueue.sync { renderBlock() }
     }
 
     /// Get current state and initialization status (thread-safe).
@@ -416,7 +422,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
 
     /// Await GPU setup completion and first frame render.
     /// This is used to ensure all GpuSurfaces are ready before showing the window.
-    func awaitReady() async {
+    func awaitReady() async -> Bool {
         // Wait for state to be available
         var state: OpaquePointer?
         while true {
@@ -427,33 +433,20 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
                 break
             }
             if !info.isInitializing {
-                // Not initialized and not initializing - nothing to wait for
-                return
+                return false
             }
             // Poll every 10ms while initializing
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        guard let state else { return }
+        guard let state else { return false }
         let stateAddr = Int(bitPattern: state)
 
-        // Call await_ready on render queue with callback
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            renderQueue.async {
-                // Create a context to pass through the callback
-                let context = Unmanaged.passRetained(continuation as AnyObject).toOpaque()
-
-                waterui_gpu_surface_await_ready(
-                    OpaquePointer(bitPattern: stateAddr),
-                    { userData in
-                        guard let userData else { return }
-                        let cont = Unmanaged<AnyObject>.fromOpaque(userData).takeRetainedValue()
-                        if let continuation = cont as? CheckedContinuation<Void, Never> {
-                            continuation.resume()
-                        }
-                    },
-                    context
-                )
+        // Call await_ready on render queue and forward success to caller.
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            WuiSharedRenderQueue.async {
+                let ok = waterui_gpu_surface_await_ready(OpaquePointer(bitPattern: stateAddr))
+                continuation.resume(returning: ok)
             }
         }
     }
@@ -465,7 +458,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         gpuState = nil
         lock.unlock()
 
-        renderQueue.sync {
+        WuiSharedRenderQueue.barrier {
             if let state { waterui_gpu_surface_drop(state) }
         }
     }
@@ -571,7 +564,7 @@ private final class WuiGpuSurfaceDisplayLinkHub {
             lock.unlock()
 
             for state in states {
-                state.requestRender(force: true)
+                _ = state.requestRender(force: true) { _ in }
             }
         }
     }
@@ -619,7 +612,7 @@ private final class WuiGpuSurfaceDisplayLinkHub {
 /// High-performance GPU rendering surface using wgpu.
 /// Uses CAMetalLayer with CADisplayLink for 120fps rendering.
 @MainActor
-final class WuiGpuSurface: PlatformView, WuiComponent {
+final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyParticipant, @unchecked Sendable {
     static var rawId: CWaterUI.WuiTypeId { waterui_gpu_surface_id() }
 
     private(set) var stretchAxis: WuiStretchAxis = .both
@@ -633,7 +626,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 	    #if canImport(UIKit)
 	        private var displayLink: CADisplayLink?
 	    #elseif canImport(AppKit)
-	        private var displayLinkWindowId: ObjectIdentifier?
+	        private var displayLink: CADisplayLink?
 	        private var trackingArea: NSTrackingArea?
 	        private weak var observedWindow: NSWindow?
 	        private var windowObservers: [NSObjectProtocol] = []
@@ -648,6 +641,10 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
     private var externalRendering = false
     private var externalRenderingCount = 0
     private let externalLock = NSLock()
+    private var captureSuppressionCount = 0
+    private let captureSuppressionLock = NSLock()
+    private var keepRedrawing = false
+    private var requiresRedrawPolling = false
 
     /// Current pointer pressed state (for tracking press origin)
     private var pressOrigin: CGPoint?
@@ -730,6 +727,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
             let panGesture = UIPanGestureRecognizer(
                 target: self, action: #selector(handlePan(_:)))
             panGesture.minimumNumberOfTouches = 2  // Require 2 fingers to avoid conflict with scroll
+            panGesture.cancelsTouchesInView = false
             addGestureRecognizer(panGesture)
 
             // Add double-tap gesture for reset
@@ -976,6 +974,15 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         }
 
         override func scrollWheel(with event: NSEvent) {
+            // When hosted inside NSScrollView, keep native scrolling as the default.
+            // Hold Option to explicitly route wheel/trackpad delta to the GPU gesture channel.
+            let hasScrollableAncestor = enclosingScrollView != nil
+            let explicitSurfacePan = event.modifierFlags.contains(.option)
+            if hasScrollableAncestor && !explicitSurfacePan {
+                super.scrollWheel(with: event)
+                return
+            }
+
             super.scrollWheel(with: event)
 
             // Handle scroll wheel for panning (with Option key or trackpad)
@@ -1156,6 +1163,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 	            guard let self else { return }
 	            guard success else { return }
 	            self.isGpuInitialized = true
+                self.requiresRedrawPolling = self.renderState.requiresRedrawPolling()
 	            // Trigger first frames immediately. On-demand surfaces don't have a display link,
 	            // so a transient swapchain timeout could otherwise leave them blank until another
 	            // event marks them dirty.
@@ -1188,34 +1196,46 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         }
 
         @objc private func render() {
-            renderFrame(force: true)
+            renderFrame()
         }
 	    #elseif canImport(AppKit)
 	        private func startDisplayLink() {
-	            guard let window else { return }
-
-	            let windowId = ObjectIdentifier(window)
-	            if displayLinkWindowId == windowId {
+	            guard displayLink == nil else { return }
+	            let link: CADisplayLink
+	            if let window {
+	                link = window.displayLink(target: self, selector: #selector(render))
+	            } else if let screen = NSScreen.main {
+	                link = screen.displayLink(target: self, selector: #selector(render))
+	            } else {
 	                return
 	            }
-
-	            if let oldId = displayLinkWindowId {
-	                WuiGpuSurfaceDisplayLinkHub.shared.unregister(renderState, windowId: oldId)
-	            }
-
-	            WuiGpuSurfaceDisplayLinkHub.shared.register(renderState, window: window)
-	            displayLinkWindowId = windowId
+	            link.add(to: .main, forMode: .common)
+	            displayLink = link
 	        }
 
 	        private func stopDisplayLink() {
-	            guard let windowId = displayLinkWindowId else { return }
-	            WuiGpuSurfaceDisplayLinkHub.shared.unregister(renderState, windowId: windowId)
-	            displayLinkWindowId = nil
+	            displayLink?.invalidate()
+	            displayLink = nil
+	        }
+
+	        @objc private func render() {
+	            renderFrame()
 	        }
 	    #endif
 
     private func renderFrame(force: Bool = false) {
-        renderState.requestRender(force: force)
+        let started = renderState.requestRender(force: force) { [weak self] outcome in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                // Keep driving on display-sync while renderer requests another frame,
+                // or when a transient render failure asks for retry.
+                self.keepRedrawing = outcome.needsRedraw || !outcome.success
+                self.updateDisplayLinkState()
+            }
+        }
+        if !started {
+            updateDisplayLinkState()
+        }
     }
 
     private func renderFirstFrames() {
@@ -1249,7 +1269,16 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 	    }
 
     private func updateDisplayLinkState() {
-        stopDisplayLink()
+        let shouldTick = keepRedrawing || requiresRedrawPolling
+        guard shouldTick else {
+            stopDisplayLink()
+            return
+        }
+        guard !externalRendering, isGpuInitialized, isEffectivelyVisible() else {
+            stopDisplayLink()
+            return
+        }
+        startDisplayLink()
     }
 
 	    func setExternalRendering(_ enabled: Bool) {
@@ -1284,8 +1313,37 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
         let shouldDisable = externalRenderingCount == 0
         externalLock.unlock()
         if shouldDisable {
-            renderState.waitForIdle()
             setExternalRendering(false)
+        }
+    }
+
+    private func setMetalLayerHidden(_ hidden: Bool) {
+        guard metalLayer.isHidden != hidden else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        metalLayer.isHidden = hidden
+        CATransaction.commit()
+    }
+
+    func beginCaptureSuppression() {
+        captureSuppressionLock.lock()
+        captureSuppressionCount += 1
+        let shouldHide = captureSuppressionCount == 1
+        captureSuppressionLock.unlock()
+        if shouldHide {
+            setMetalLayerHidden(true)
+        }
+    }
+
+    func endCaptureSuppression() {
+        captureSuppressionLock.lock()
+        if captureSuppressionCount > 0 {
+            captureSuppressionCount -= 1
+        }
+        let shouldShow = captureSuppressionCount == 0
+        captureSuppressionLock.unlock()
+        if shouldShow {
+            setMetalLayerHidden(false)
         }
     }
 
@@ -1320,20 +1378,43 @@ final class WuiGpuSurface: PlatformView, WuiComponent {
 
     /// Wait for GPU setup and first frame to complete.
     /// Call this before showing the window to prevent flicker.
-    nonisolated func waitForReady() async {
+    func waitForReady() async -> Bool {
         await renderState.awaitReady()
+    }
+
+    func participatesInFirstPaintReady() -> Bool {
+        #if canImport(UIKit)
+            guard window != nil else { return false }
+            guard !isHidden, alpha > 0.01 else { return false }
+            guard bounds.width > 0.5, bounds.height > 0.5 else { return false }
+            return true
+        #elseif canImport(AppKit)
+            guard window != nil else { return false }
+            guard !isHidden, alphaValue > 0.01 else { return false }
+            guard bounds.width > 0.5, bounds.height > 0.5 else { return false }
+            return true
+        #else
+            return true
+        #endif
     }
 
     // MARK: - WuiComponent
 
+    private func resolvedProposalDimension(_ value: Float?) -> CGFloat {
+        guard let value else { return 0 }
+        let resolved = CGFloat(value)
+        precondition(!resolved.isNaN, "WuiGpuSurface received NaN proposal dimension")
+        precondition(resolved >= 0, "WuiGpuSurface received negative proposal dimension: \(resolved)")
+        return resolved
+    }
+
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
-        // GpuSurface stretches to fill available space
-        let defaultSize: CGFloat = 100
-
-        let width = proposal.width.map { CGFloat($0) } ?? defaultSize
-        let height = proposal.height.map { CGFloat($0) } ?? defaultSize
-
-        return CGSize(width: width, height: height)
+        // GpuSurface is stretch-first: without parent constraints it has no intrinsic minimum.
+        // This keeps min-size semantics driven by explicit layout constraints (.size/.min_*).
+        CGSize(
+            width: resolvedProposalDimension(proposal.width),
+            height: resolvedProposalDimension(proposal.height)
+        )
     }
 
     // MARK: - Layout
@@ -1513,6 +1594,10 @@ extension WuiGpuSurface: UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
+        if gestureRecognizer.view is UIScrollView || otherGestureRecognizer.view is UIScrollView {
+            return true
+        }
+
         // Allow pinch and pan gestures to work together
         let isPinch = gestureRecognizer is UIPinchGestureRecognizer
             || otherGestureRecognizer is UIPinchGestureRecognizer

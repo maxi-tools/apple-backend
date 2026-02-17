@@ -34,6 +34,11 @@ import QuartzCore
     import AppKit
 #endif
 
+private struct WuiViewEffectRenderOutcome: Sendable {
+    let success: Bool
+    let needsRedraw: Bool
+}
+
 // MARK: - Render State
 
 /// Thread-safe render state for ViewEffect
@@ -60,10 +65,6 @@ private final class WuiViewEffectRenderState: @unchecked Sendable {
     private var captureSurface: IOSurfaceRef?
 
     private let lock = NSLock()
-    private let renderQueue = DispatchQueue(
-        label: "waterui.view-effect.render",
-        qos: .userInteractive
-    )
 
     init(ffiEffect: CWaterUI.WuiViewEffect) {
         self.ffiEffect = ffiEffect
@@ -172,7 +173,7 @@ private final class WuiViewEffectRenderState: @unchecked Sendable {
         let completionBox = BoolCompletionBox(completion)
         let outputLayerAddr = Int(bitPattern: outputLayerPtr)
 
-        renderQueue.async { [weak self] in
+        WuiSharedRenderQueue.async { [weak self] in
             guard let self else {
                 DispatchQueue.main.async { completionBox.completion(false) }
                 return
@@ -210,35 +211,47 @@ private final class WuiViewEffectRenderState: @unchecked Sendable {
         }
     }
 
-    func requestRender() {
+    @discardableResult
+    func requestRender(completion: @escaping @Sendable (WuiViewEffectRenderOutcome) -> Void) -> Bool {
         lock.lock()
         if !isActive {
             lock.unlock()
-            return
+            return false
         }
 
         guard let state = effectState, inputWidth > 0, inputHeight > 0, !renderInFlight else {
             lock.unlock()
-            return
+            return false
         }
 
         renderInFlight = true
         let stateAddr = Int(bitPattern: state)
         lock.unlock()
 
-        renderQueue.async { [weak self] in
+        WuiSharedRenderQueue.async { [weak self] in
             guard let self else { return }
             guard let state = OpaquePointer(bitPattern: stateAddr) else {
                 self.lock.lock()
                 self.renderInFlight = false
                 self.lock.unlock()
+                DispatchQueue.main.async {
+                    completion(WuiViewEffectRenderOutcome(success: false, needsRedraw: false))
+                }
                 return
             }
-            _ = waterui_view_effect_render(state)
+            let result = waterui_view_effect_render(state)
+            let outcome = WuiViewEffectRenderOutcome(
+                success: result.success,
+                needsRedraw: result.needs_redraw
+            )
             self.lock.lock()
             self.renderInFlight = false
             self.lock.unlock()
+            DispatchQueue.main.async {
+                completion(outcome)
+            }
         }
+        return true
     }
 
     /// Provide input texture data to the effect
@@ -260,7 +273,7 @@ private final class WuiViewEffectRenderState: @unchecked Sendable {
         effectState = nil
         lock.unlock()
 
-        renderQueue.sync {
+        WuiSharedRenderQueue.barrier {
             if let state { waterui_view_effect_drop(state) }
         }
     }
@@ -270,7 +283,7 @@ private final class WuiViewEffectRenderState: @unchecked Sendable {
 
 /// GPU effect view that captures child content and applies custom effects
 @MainActor
-final class WuiViewEffect: PlatformView, WuiComponent {
+final class WuiViewEffect: PlatformView, WuiComponent, WuiFirstPaintReadyParticipant, @unchecked Sendable {
     static var rawId: CWaterUI.WuiTypeId { waterui_view_effect_id() }
 
     private(set) var stretchAxis: WuiStretchAxis = .none
@@ -295,6 +308,9 @@ final class WuiViewEffect: PlatformView, WuiComponent {
     /// Current capture texture dimensions
     private var captureWidth: UInt32 = 0
     private var captureHeight: UInt32 = 0
+
+    /// On-demand render state
+    private var needsRender = false
 
     /// Display link for frame sync
     #if canImport(UIKit)
@@ -425,7 +441,7 @@ final class WuiViewEffect: PlatformView, WuiComponent {
                 return
             }
             self.isGpuInitialized = true
-            self.startDisplayLink()
+            self.requestRenderIfNeeded()
         }
     }
 
@@ -481,9 +497,34 @@ final class WuiViewEffect: PlatformView, WuiComponent {
         }
     #endif
 
+    private func requestRenderIfNeeded() {
+        needsRender = true
+        scheduleFrameIfNeeded()
+    }
+
+    private func scheduleFrameIfNeeded() {
+        guard isGpuInitialized else { return }
+        guard window != nil else {
+            stopDisplayLink()
+            return
+        }
+        if needsRender {
+            startDisplayLink()
+        } else {
+            stopDisplayLink()
+        }
+    }
+
     private func onFrame() {
+        guard needsRender else {
+            stopDisplayLink()
+            return
+        }
+        needsRender = false
+
         // Get the capture texture
         guard let captureTexture = renderState.getCaptureTexture() else {
+            requestRenderIfNeeded()
             return
         }
 
@@ -499,9 +540,107 @@ final class WuiViewEffect: PlatformView, WuiComponent {
 
         if success {
             // Trigger the effect render
-            renderState.requestRender()
+            let started = renderState.requestRender { [weak self] result in
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    if result.needsRedraw {
+                        self.needsRender = true
+                    }
+                    self.scheduleFrameIfNeeded()
+                }
+            }
+            if !started {
+                needsRender = true
+            }
+        }
+        scheduleFrameIfNeeded()
+    }
+
+    private func requestReadyFrame(completion: @escaping @Sendable (Bool) -> Void) {
+        initializeGpuIfNeeded()
+        guard isGpuInitialized else {
+            completion(false)
+            return
+        }
+        guard let captureTexture = renderState.getCaptureTexture() else {
+            completion(false)
+            return
+        }
+
+        let texturePtr = Unmanaged.passUnretained(captureTexture).toOpaque()
+        guard renderState.setInput(
+            type: WuiInputType_MetalTexture,
+            handle: texturePtr,
+            width: captureWidth,
+            height: captureHeight
+        ) else {
+            completion(false)
+            return
+        }
+
+        let started = renderState.requestRender { outcome in
+            completion(outcome.success)
+        }
+        if !started {
+            completion(false)
         }
     }
+
+    func prepareForReady() {
+        #if canImport(UIKit)
+            setNeedsLayout()
+            layoutIfNeeded()
+        #elseif canImport(AppKit)
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+        #endif
+        initializeGpuIfNeeded()
+        requestRenderIfNeeded()
+    }
+
+    func waitForReady() async -> Bool {
+        await withCheckedContinuation { continuation in
+            requestReadyFrame { ok in
+                continuation.resume(returning: ok)
+            }
+        }
+    }
+
+    func participatesInFirstPaintReady() -> Bool {
+        #if canImport(UIKit)
+            guard window != nil else { return false }
+            guard !isHidden, alpha > 0.01 else { return false }
+            guard bounds.width > 0.5, bounds.height > 0.5 else { return false }
+            return true
+        #elseif canImport(AppKit)
+            guard window != nil else { return false }
+            guard !isHidden, alphaValue > 0.01 else { return false }
+            guard bounds.width > 0.5, bounds.height > 0.5 else { return false }
+            return true
+        #else
+            return true
+        #endif
+    }
+
+    #if canImport(UIKit)
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window == nil {
+                stopDisplayLink()
+            } else {
+                scheduleFrameIfNeeded()
+            }
+        }
+    #elseif canImport(AppKit)
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                stopDisplayLink()
+            } else {
+                scheduleFrameIfNeeded()
+            }
+        }
+    #endif
 
     // MARK: - WuiComponent
 
@@ -521,6 +660,7 @@ final class WuiViewEffect: PlatformView, WuiComponent {
             outputLayer.frame = bounds
             childView?.frame = bounds
             initializeGpuIfNeeded()
+            requestRenderIfNeeded()
         }
     #elseif canImport(AppKit)
         override func layout() {
@@ -528,6 +668,7 @@ final class WuiViewEffect: PlatformView, WuiComponent {
             outputLayer.frame = bounds
             childView?.frame = bounds
             initializeGpuIfNeeded()
+            requestRenderIfNeeded()
         }
     #endif
 

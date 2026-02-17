@@ -20,6 +20,63 @@ import UIKit
 import AppKit
 #endif
 
+private func isMinSizeQuery(_ proposal: WuiProposalSize) -> (width: Bool, height: Bool) {
+    let widthMin = proposal.width.map { $0 == 0 } ?? false
+    let heightMin = proposal.height.map { $0 == 0 } ?? false
+    return (widthMin, heightMin)
+}
+
+private func proposalDimension(_ value: Float?) -> CGFloat {
+    value.map(CGFloat.init) ?? 0
+}
+
+private func scrollMinSize(
+    axis: WuiAxis,
+    proposal: WuiProposalSize,
+    measureContent: (WuiProposalSize) -> CGSize
+) -> CGSize {
+    let minQuery = isMinSizeQuery(proposal)
+    if !minQuery.width && !minQuery.height {
+        return CGSize(
+            width: proposalDimension(proposal.width),
+            height: proposalDimension(proposal.height)
+        )
+    }
+
+    let intrinsic = measureContent(WuiProposalSize(width: nil, height: nil))
+    let intrinsicWidth = intrinsic.width.isFinite ? max(0, intrinsic.width) : 0
+    let intrinsicHeight = intrinsic.height.isFinite ? max(0, intrinsic.height) : 0
+
+    let proposedWidth = proposalDimension(proposal.width)
+    let proposedHeight = proposalDimension(proposal.height)
+
+    switch axis {
+    case WuiAxis_Vertical:
+        // Vertical scroll can compress on Y, but X should preserve content minimum.
+        return CGSize(
+            width: minQuery.width ? intrinsicWidth : proposedWidth,
+            height: minQuery.height ? 0 : proposedHeight
+        )
+    case WuiAxis_Horizontal:
+        // Horizontal scroll can compress on X, but Y should preserve content minimum.
+        return CGSize(
+            width: minQuery.width ? 0 : proposedWidth,
+            height: minQuery.height ? intrinsicHeight : proposedHeight
+        )
+    case WuiAxis_All:
+        // Bi-directional scroll allows compression on both axes.
+        return CGSize(
+            width: minQuery.width ? 0 : proposedWidth,
+            height: minQuery.height ? 0 : proposedHeight
+        )
+    default:
+        return CGSize(
+            width: minQuery.width ? intrinsicWidth : proposedWidth,
+            height: minQuery.height ? 0 : proposedHeight
+        )
+    }
+}
+
 #if canImport(UIKit)
 @MainActor
 final class WuiScroll: UIScrollView, WuiComponent, UIScrollViewDelegate {
@@ -76,12 +133,9 @@ final class WuiScroll: UIScrollView, WuiComponent, UIScrollViewDelegate {
     // MARK: - WuiComponent
 
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
-        // ScrollView takes all proposed space, or 0 if unspecified
-        // Returning 0 when unconstrained allows parent to determine size
-        // instead of ScrollView forcing screen-sized expansion
-        let width = proposal.width.map { CGFloat($0) } ?? 0
-        let height = proposal.height.map { CGFloat($0) } ?? 0
-        return CGSize(width: width, height: height)
+        scrollMinSize(axis: axis, proposal: proposal) { contentProposal in
+            contentView.sizeThatFits(contentProposal)
+        }
     }
 
     override func layoutSubviews() {
@@ -191,12 +245,9 @@ final class WuiScroll: NSScrollView, WuiComponent {
     // MARK: - WuiComponent
 
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
-        // ScrollView takes all proposed space, or 0 if unspecified
-        // Returning 0 when unconstrained allows parent to determine size
-        // instead of ScrollView forcing screen-sized expansion
-        let width = proposal.width.map { CGFloat($0) } ?? 0
-        let height = proposal.height.map { CGFloat($0) } ?? 0
-        return CGSize(width: width, height: height)
+        scrollMinSize(axis: axis, proposal: proposal) { contentProposal in
+            contentHostView.sizeThatFits(contentProposal)
+        }
     }
 
     override func layout() {

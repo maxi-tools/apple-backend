@@ -21,6 +21,11 @@ import QuartzCore
     import CoreVideo
 #endif
 
+private struct WuiAppliedFilterRenderOutcome: Sendable {
+    let success: Bool
+    let needsRedraw: Bool
+}
+
 /// Context for async callback - holds both state and completion handler.
 private final class SetupCallbackContext: @unchecked Sendable {
     let state: WuiAppliedFilterRenderState
@@ -41,16 +46,12 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
     private var renderInFlight = false
     private var width: UInt32 = 0
     private var height: UInt32 = 0
-    private var preRender: ((OpaquePointer, UInt32, UInt32) -> Void)?
+    private var preRender: ((OpaquePointer, UInt32, UInt32) -> Bool)?
     private var captureRenderer: CARenderer?
     private var captureQueue: MTLCommandQueue?
     private var captureQueueDevice: MTLDevice?
 
     private let lock = NSLock()
-    private let renderQueue = DispatchQueue(
-        label: "waterui.applied-filter.render",
-        qos: .userInteractive
-    )
 
     func updateSize(width: UInt32, height: UInt32) {
         lock.lock()
@@ -96,7 +97,7 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         let filterAddr = Int(bitPattern: filter)
         let layerAddr = Int(bitPattern: layerPtr)
 
-        renderQueue.async { [weak self] in
+        WuiSharedRenderQueue.async { [weak self] in
             guard let self else {
                 DispatchQueue.main.async { completionCopy(false) }
                 return
@@ -144,16 +145,17 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         }
     }
 
-    func requestRender() {
+    @discardableResult
+    func requestRender(completion: @escaping @Sendable (WuiAppliedFilterRenderOutcome) -> Void) -> Bool {
         lock.lock()
         if !isActive || !isSetup {
             lock.unlock()
-            return
+            return false
         }
 
         guard let state = filterState, width > 0, height > 0, !renderInFlight else {
             lock.unlock()
-            return
+            return false
         }
 
         renderInFlight = true
@@ -162,29 +164,69 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         let height = self.height
         lock.unlock()
 
-        renderQueue.async { [weak self] in
+        if !waterui_applied_filter_sync_targets(state) {
+            lock.lock()
+            renderInFlight = false
+            lock.unlock()
+            return false
+        }
+
+        WuiSharedRenderQueue.async { [weak self] in
             guard let self else { return }
 
             guard let state = OpaquePointer(bitPattern: stateAddr) else {
                 self.lock.lock()
                 self.renderInFlight = false
                 self.lock.unlock()
+                DispatchQueue.main.async {
+                    completion(WuiAppliedFilterRenderOutcome(success: false, needsRedraw: false))
+                }
                 return
             }
 
-            let renderHook: ((OpaquePointer, UInt32, UInt32) -> Void)?
+            let renderHook: ((OpaquePointer, UInt32, UInt32) -> Bool)?
             self.lock.lock()
             renderHook = self.preRender
             self.lock.unlock()
 
-            if let renderHook {
-                renderHook(state, width, height)
+            if let renderHook, !renderHook(state, width, height) {
+                self.lock.lock()
+                self.renderInFlight = false
+                self.lock.unlock()
+                DispatchQueue.main.async {
+                    completion(WuiAppliedFilterRenderOutcome(success: false, needsRedraw: true))
+                }
+                return
             }
-            _ = waterui_applied_filter_render(state, width, height)
+            let result = waterui_applied_filter_render(state, width, height)
+            let outcome = WuiAppliedFilterRenderOutcome(
+                success: result.success,
+                needsRedraw: result.needs_redraw
+            )
             self.lock.lock()
             self.renderInFlight = false
             self.lock.unlock()
+            DispatchQueue.main.async {
+                completion(outcome)
+            }
         }
+        return true
+    }
+
+    func pollNeedsRender() -> Bool {
+        lock.lock()
+        guard isActive, isSetup, !renderInFlight, let state = filterState else {
+            lock.unlock()
+            return false
+        }
+        let stateAddr = Int(bitPattern: state)
+        lock.unlock()
+
+        guard let state = OpaquePointer(bitPattern: stateAddr) else {
+            return false
+        }
+
+        return waterui_applied_filter_poll_redraw(state)
     }
 
     func shutdown() {
@@ -194,7 +236,7 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         filterState = nil
         lock.unlock()
 
-        renderQueue.sync {
+        WuiSharedRenderQueue.barrier {
             if let state { waterui_applied_filter_drop(state) }
         }
     }
@@ -206,7 +248,7 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         lock.unlock()
     }
 
-    func setPreRender(_ hook: ((OpaquePointer, UInt32, UInt32) -> Void)?) {
+    func setPreRender(_ hook: ((OpaquePointer, UInt32, UInt32) -> Bool)?) {
         lock.lock()
         preRender = hook
         lock.unlock()
@@ -217,8 +259,8 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         targetTexture: MTLTexture,
         width: UInt32,
         height: UInt32
-    ) -> Bool {
-        guard width > 0, height > 0 else { return false }
+    ) -> MTLCommandBuffer? {
+        guard width > 0, height > 0 else { return nil }
 
         let device = targetTexture.device
         let queue: MTLCommandQueue?
@@ -262,13 +304,10 @@ private final class WuiAppliedFilterRenderState: @unchecked Sendable {
         renderer.addUpdate(renderer.bounds)
         renderer.render()
         renderer.endFrame()
-        if let queue, let commandBuffer = queue.makeCommandBuffer() {
-            // Block until the CARenderer work completes so wgpu samples updated pixels.
-            commandBuffer.commit()
-            commandBuffer.waitUntilCompleted()
-        }
-
-        return true
+        guard let queue, let commandBuffer = queue.makeCommandBuffer() else { return nil }
+        commandBuffer.commit()
+        // Caller decides where to wait to avoid blocking the main thread.
+        return commandBuffer
     }
 }
 
@@ -296,7 +335,7 @@ private func setupCallback(userData: UnsafeMutableRawPointer?) {
 /// Captures child view content and applies GPU filters via wgpu.
 /// Uses CAMetalLayer for output display.
 @MainActor
-final class WuiAppliedFilter: PlatformView, WuiComponent {
+final class WuiAppliedFilter: PlatformView, WuiComponent, WuiFirstPaintReadyParticipant, @unchecked Sendable {
     static var rawId: CWaterUI.WuiTypeId { waterui_metadata_applied_filter_id() }
 
     private let contentView: any WuiComponent
@@ -323,6 +362,8 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
     private var gpuSurfaceTextures: [ObjectIdentifier: MTLTexture] = [:]
     private var gpuSurfaceTextureSizes: [ObjectIdentifier: CGSize] = [:]
     private var gpuSurfaceHasContent: Set<ObjectIdentifier> = []
+    private var needsRender = false
+    private var filteredOutputRevealed = false
 
     /// Display link for render sync
     #if canImport(UIKit)
@@ -381,6 +422,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         outputLayer.pixelFormat = .rgba16Float
         outputLayer.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
         outputLayer.wantsExtendedDynamicRangeContent = true
+        outputLayer.isHidden = true
 
         #if canImport(UIKit)
             layer.addSublayer(outputLayer)
@@ -397,7 +439,8 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         contentView.translatesAutoresizingMaskIntoConstraints = true
         // Keep content in the view tree for layout/capture; output layer overlays it.
         addSubview(contentView)
-        contentView.isHidden = true
+        contentView.isHidden = false
+        setCaptureContentLayerHidden(true)
         outputLayer.removeFromSuperlayer()
         #if canImport(UIKit)
             layer.addSublayer(outputLayer)
@@ -411,13 +454,29 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         setupCapturePipeline()
     }
 
+    private func setCaptureContentLayerHidden(_ hidden: Bool) {
+        #if canImport(AppKit)
+            ensureLayerBacked(contentView)
+        #endif
+        guard let layer = contentView.layer else {
+            fatalError("AppliedFilter content view must be layer-backed before capture")
+        }
+        guard layer.isHidden != hidden else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.isHidden = hidden
+        CATransaction.commit()
+    }
+
     private func setupCapturePipeline() {
         renderState.setPreRender { [weak self] state, width, height in
-            guard let self else { return }
+            guard let self else { return false }
             var captureTexture: MTLTexture?
             var overlayTexture: MTLTexture?
             var snapshots: [GpuSurfaceSnapshot] = []
             var device: MTLDevice?
+            var nativeCaptureFence: MTLCommandBuffer?
+            var capturePrepared = false
 
             let mainBlock = {
                 self.withVisibleContentForCapture {
@@ -436,9 +495,8 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
                     snapshots = self.collectGpuSurfaceSnapshots()
                     self.updateExternalGpuSurfaces(snapshots)
                     if snapshots.isEmpty {
-                        self.clearTexture(texture, device: outputDevice)
                         guard let layer = self.resolveCaptureLayer(from: self.contentView) else { return }
-                        _ = self.renderState.renderNativeLayer(
+                        nativeCaptureFence = self.renderState.renderNativeLayer(
                             layer,
                             targetTexture: texture,
                             width: width,
@@ -453,10 +511,9 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
                             return
                         }
                         overlayTexture = overlay
-                        self.clearTexture(overlay, device: outputDevice)
                         self.withHiddenGpuSurfaces {
                             guard let layer = self.resolveCaptureLayer(from: self.contentView) else { return }
-                            _ = self.renderState.renderNativeLayer(
+                            nativeCaptureFence = self.renderState.renderNativeLayer(
                                 layer,
                                 targetTexture: overlay,
                                 width: width,
@@ -464,6 +521,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
                             )
                         }
                     }
+                    capturePrepared = true
                 }
             }
 
@@ -473,15 +531,20 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
                 DispatchQueue.main.sync(execute: mainBlock)
             }
 
-            guard let device, let captureTexture else { return }
+            guard capturePrepared, let device, let captureTexture, let nativeCaptureFence else {
+                return false
+            }
+            nativeCaptureFence.waitUntilCompleted()
 
             if !snapshots.isEmpty {
-                self.renderGpuSurfaces(
+                guard self.renderGpuSurfaces(
                     snapshots,
                     into: captureTexture,
                     overlayTexture: overlayTexture,
                     device: device
-                )
+                ) else {
+                    return false
+                }
             }
 
             let texturePtr = Unmanaged.passUnretained(captureTexture).toOpaque()
@@ -494,44 +557,33 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
             )
             if !ok {
                 Logger.waterui.error("[AppliedFilter] Failed to set input texture")
+                return false
             }
+            return true
         }
     }
 
     private func withVisibleContentForCapture(_ work: () -> Void) {
-        #if canImport(UIKit)
-            let wasHidden = contentView.isHidden
-            let oldAlpha = contentView.alpha
-            contentView.isHidden = false
-            contentView.alpha = 1.0
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            work()
-            CATransaction.commit()
-            contentView.alpha = oldAlpha
-            contentView.isHidden = wasHidden
-        #elseif canImport(AppKit)
-            let wasHidden = contentView.isHidden
-            let oldAlpha = contentView.alphaValue
-            contentView.isHidden = false
-            contentView.alphaValue = 1.0
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            work()
-            CATransaction.commit()
-            contentView.alphaValue = oldAlpha
-            contentView.isHidden = wasHidden
+        #if canImport(AppKit)
+            ensureLayerBacked(contentView)
         #endif
+        guard let layer = contentView.layer else {
+            fatalError("AppliedFilter content view must be layer-backed before capture")
+        }
+        let wasHidden = layer.isHidden
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.isHidden = false
+        work()
+        layer.isHidden = wasHidden
+        CATransaction.commit()
     }
 
     private func prepareCaptureView(_ view: PlatformView) {
         #if canImport(AppKit)
             ensureLayerBacked(view)
-            view.needsLayout = true
-            view.layoutSubtreeIfNeeded()
             view.needsDisplay = true
             view.displayIfNeeded()
-            updateLayerTree(view, scale: currentScaleFactor)
         #elseif canImport(UIKit)
             view.setNeedsLayout()
             view.layoutIfNeeded()
@@ -539,20 +591,6 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
     }
 
     #if canImport(AppKit)
-    private func updateLayerTree(_ view: PlatformView, scale: CGFloat) {
-        if let layer = view.layer {
-            layer.contentsScale = scale
-            layer.setNeedsLayout()
-            layer.layoutIfNeeded()
-            layer.setNeedsDisplay()
-            layer.displayIfNeeded()
-        }
-
-        for subview in view.subviews {
-            updateLayerTree(subview, scale: scale)
-        }
-    }
-
     private func ensureLayerBacked(_ view: PlatformView) {
         if view.layer == nil {
             view.wantsLayer = true
@@ -658,13 +696,12 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
             return
         }
 
-        let hiddenStates = surfaces.map(\.isHidden)
         for surface in surfaces {
-            surface.isHidden = true
+            surface.beginCaptureSuppression()
         }
         work()
-        for (surface, wasHidden) in zip(surfaces, hiddenStates) {
-            surface.isHidden = wasHidden
+        for surface in surfaces {
+            surface.endCaptureSuppression()
         }
     }
 
@@ -783,33 +820,15 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         return queue
     }
 
-    private func clearTexture(_ texture: MTLTexture, device: MTLDevice) {
-        guard let queue = ensureCommandQueue(device: device) else { return }
-        let descriptor = MTLRenderPassDescriptor()
-        descriptor.colorAttachments[0].texture = texture
-        descriptor.colorAttachments[0].loadAction = .clear
-        descriptor.colorAttachments[0].storeAction = .store
-        descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-
-        guard let commandBuffer = queue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
-        else {
-            return
-        }
-
-        encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-    }
-
     private func renderGpuSurfaces(
         _ snapshots: [GpuSurfaceSnapshot],
         into captureTexture: MTLTexture,
         overlayTexture: MTLTexture?,
         device: MTLDevice
-    ) {
+    ) -> Bool {
         var rendered: [(snapshot: GpuSurfaceSnapshot, texture: MTLTexture)] = []
         rendered.reserveCapacity(snapshots.count)
+        var hasMissingFirstFrame = false
 
         for snapshot in snapshots {
             let width = UInt32(snapshot.size.width)
@@ -831,13 +850,21 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
                 rendered.append((snapshot, surfaceTexture))
             } else if gpuSurfaceHasContent.contains(ObjectIdentifier(snapshot.surface)) {
                 rendered.append((snapshot, surfaceTexture))
+            } else {
+                hasMissingFirstFrame = true
             }
+        }
+
+        // Never present partially populated GPU overlays. Wait until every snapshot has either
+        // a fresh frame or a cached previous frame to keep visual consistency.
+        if hasMissingFirstFrame {
+            return false
         }
 
         guard let queue = ensureCommandQueue(device: device),
               let commandBuffer = queue.makeCommandBuffer()
         else {
-            return
+            return false
         }
 
         encodeClear(captureTexture, commandBuffer: commandBuffer)
@@ -870,6 +897,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        return true
     }
 
     private func encodeClear(_ texture: MTLTexture, commandBuffer: MTLCommandBuffer) {
@@ -1030,8 +1058,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
                 // but we need to inform Swift we're on MainActor
                 MainActor.assumeIsolated {
                     self.isGpuInitialized = true
-                    self.startDisplayLink()
-                    self.renderFrame()
+                    self.requestRenderIfNeeded()
                 }
             }
         }
@@ -1088,8 +1115,104 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
         }
     #endif
 
+    private func requestRenderIfNeeded() {
+        needsRender = true
+        scheduleFrameIfNeeded()
+    }
+
+    private func scheduleFrameIfNeeded() {
+        guard isGpuInitialized else { return }
+        guard window != nil else {
+            stopDisplayLink()
+            return
+        }
+        startDisplayLink()
+    }
+
     private func renderFrame() {
-        renderState.requestRender()
+        if !needsRender {
+            needsRender = renderState.pollNeedsRender()
+        }
+        guard needsRender else {
+            return
+        }
+        needsRender = false
+
+        let started = renderState.requestRender { [weak self] result in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                if result.success {
+                    self.revealFilteredOutputNow()
+                }
+                if result.needsRedraw {
+                    self.needsRender = true
+                }
+                self.scheduleFrameIfNeeded()
+            }
+        }
+        if !started {
+            needsRender = true
+        }
+        scheduleFrameIfNeeded()
+    }
+
+    private func requestReadyFrame(completion: @escaping @Sendable (Bool) -> Void) {
+        let started = renderState.requestRender { [weak self] outcome in
+            MainActor.assumeIsolated {
+                if outcome.success, let self {
+                    self.revealFilteredOutputNow()
+                }
+                completion(outcome.success)
+            }
+        }
+        if !started {
+            completion(false)
+        }
+    }
+
+    fileprivate func revealFilteredOutputNow() {
+        guard !filteredOutputRevealed else { return }
+        filteredOutputRevealed = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        outputLayer.isHidden = false
+        CATransaction.commit()
+    }
+
+    func prepareForReady() {
+        #if canImport(UIKit)
+            setNeedsLayout()
+            layoutIfNeeded()
+        #elseif canImport(AppKit)
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+        #endif
+        initializeGpuIfNeeded()
+        requestRenderIfNeeded()
+    }
+
+    func waitForReady() async -> Bool {
+        await withCheckedContinuation { continuation in
+            requestReadyFrame { ok in
+                continuation.resume(returning: ok)
+            }
+        }
+    }
+
+    func participatesInFirstPaintReady() -> Bool {
+        #if canImport(UIKit)
+            guard window != nil else { return false }
+            guard !isHidden, alpha > 0.01 else { return false }
+            guard bounds.width > 0.5, bounds.height > 0.5 else { return false }
+            return true
+        #elseif canImport(AppKit)
+            guard window != nil else { return false }
+            guard !isHidden, alphaValue > 0.01 else { return false }
+            guard bounds.width > 0.5, bounds.height > 0.5 else { return false }
+            return true
+        #else
+            return true
+        #endif
     }
 
     // MARK: - WuiComponent
@@ -1112,6 +1235,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
             contentView.layoutIfNeeded()
             updateOutputLayerFrame()
             initializeGpuIfNeeded()
+            requestRenderIfNeeded()
         }
 
         override func didMoveToWindow() {
@@ -1120,6 +1244,9 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
                 currentScaleFactor = contentScaleFactor
                 updateOutputLayerFrame()
                 initializeGpuIfNeeded()
+                requestRenderIfNeeded()
+            } else {
+                stopDisplayLink()
             }
         }
     #elseif canImport(AppKit)
@@ -1137,6 +1264,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
             contentView.layoutSubtreeIfNeeded()
             updateOutputLayerFrame()
             initializeGpuIfNeeded()
+            requestRenderIfNeeded()
         }
 
         override func viewDidMoveToWindow() {
@@ -1145,6 +1273,9 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
                 currentScaleFactor = window?.backingScaleFactor ?? 1.0
                 updateOutputLayerFrame()
                 initializeGpuIfNeeded()
+                requestRenderIfNeeded()
+            } else {
+                stopDisplayLink()
             }
         }
 
@@ -1154,6 +1285,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent {
                 currentScaleFactor = newScale
                 updateOutputLayerFrame()
                 initializeGpuIfNeeded()
+                requestRenderIfNeeded()
             }
         }
     #endif

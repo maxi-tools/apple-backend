@@ -15,6 +15,59 @@ import os
     import AppKit
 #endif
 
+@MainActor
+protocol WuiFirstPaintReadyParticipant: AnyObject, Sendable {
+    func prepareForReady()
+    func waitForReady() async -> Bool
+    func participatesInFirstPaintReady() -> Bool
+}
+
+@MainActor
+private func waitForFirstPaintReadyParticipants(
+    _ participants: [any WuiFirstPaintReadyParticipant],
+    totalTimeoutMs: Int,
+    retryNs: UInt64
+) async {
+    let start = ContinuousClock.now
+    var pending = participants
+
+    while !pending.isEmpty {
+        let current = pending
+        let tasks = current.map { participant in
+            Task { @MainActor in
+                await participant.waitForReady()
+            }
+        }
+
+        var failed: [any WuiFirstPaintReadyParticipant] = []
+        failed.reserveCapacity(current.count)
+
+        for (participant, task) in zip(current, tasks) {
+            let ok = await task.value
+            if !ok {
+                failed.append(participant)
+            }
+        }
+
+        pending = failed
+        guard !pending.isEmpty else { break }
+
+        if start.duration(to: ContinuousClock.now) >= .milliseconds(totalTimeoutMs) {
+            let unresolved = pending
+                .map {
+                    let addr = UInt(bitPattern: Unmanaged.passUnretained($0 as AnyObject).toOpaque())
+                    return String(format: "0x%llx", addr)
+                }
+                .joined(separator: ",")
+            fatalError(
+                "WuiAnyView.ready timed out after \(totalTimeoutMs)ms with \(pending.count)/\(participants.count) unresolved GPU participant(s): \(unresolved). Partial first paint is forbidden."
+            )
+        }
+
+        try? await Task.sleep(nanoseconds: retryNs)
+    }
+}
+
 // MARK: - Component Registry
 
 /// Internal registry for component factories using pointer-based ID lookup
@@ -375,38 +428,59 @@ private func registerBuiltinComponentsIfNeeded() {
 
         /// Wait for all GpuSurfaces in the view tree to complete setup and first render.
         /// Call this before showing the window to prevent flicker.
-        public nonisolated func ready() async {
-            let surfaces = await MainActor.run {
-                let surfaces = collectGpuSurfaces()
-                for surface in surfaces {
-                    surface.prepareForReady()
-                }
-                return surfaces
+        @MainActor
+        public func ready() async {
+            let all = collectFirstPaintReadyParticipants()
+            for participant in all {
+                participant.prepareForReady()
             }
-            guard !surfaces.isEmpty else { return }
+            let participants = firstPaintReadyParticipants(all)
+            guard !participants.isEmpty else { return }
 
-            await withTaskGroup(of: Void.self) { group in
-                for surface in surfaces {
-                    group.addTask {
-                        await surface.waitForReady()
-                    }
-                }
-            }
+            let totalTimeoutMs = gpuReadyTotalTimeoutMs()
+            let retryNs = gpuReadyRetryIntervalNs()
+            await waitForFirstPaintReadyParticipants(
+                participants,
+                totalTimeoutMs: totalTimeoutMs,
+                retryNs: retryNs
+            )
         }
 
-        /// Recursively collects all WuiGpuSurface instances from the view hierarchy.
-        private func collectGpuSurfaces() -> [WuiGpuSurface] {
-            var surfaces: [WuiGpuSurface] = []
-            collectGpuSurfacesRecursive(from: self, into: &surfaces)
-            return surfaces
+        private func gpuReadyTotalTimeoutMs() -> Int {
+            let raw = ProcessInfo.processInfo.environment["WATERUI_GPU_READY_TOTAL_TIMEOUT_MS"]
+            let parsed = raw.flatMap(Int.init) ?? 3_000
+            return min(max(parsed, 500), 30_000)
         }
 
-        private func collectGpuSurfacesRecursive(from view: UIView, into surfaces: inout [WuiGpuSurface]) {
-            if let gpuSurface = view as? WuiGpuSurface {
-                surfaces.append(gpuSurface)
+        private func gpuReadyRetryIntervalNs() -> UInt64 {
+            let raw = ProcessInfo.processInfo.environment["WATERUI_GPU_READY_RETRY_INTERVAL_MS"]
+            let parsed = raw.flatMap(UInt64.init) ?? 12
+            return min(max(parsed, 4), 250) * 1_000_000
+        }
+
+        private func firstPaintReadyParticipants(_ all: [any WuiFirstPaintReadyParticipant]) -> [
+            any WuiFirstPaintReadyParticipant
+        ] {
+            let eligible = all.filter { $0.participatesInFirstPaintReady() }
+            return eligible.isEmpty ? all : eligible
+        }
+
+        /// Recursively collects GPU-backed participants that must be ready before first paint.
+        private func collectFirstPaintReadyParticipants() -> [any WuiFirstPaintReadyParticipant] {
+            var participants: [any WuiFirstPaintReadyParticipant] = []
+            collectFirstPaintReadyParticipantsRecursive(from: self, into: &participants)
+            return participants
+        }
+
+        private func collectFirstPaintReadyParticipantsRecursive(
+            from view: UIView,
+            into participants: inout [any WuiFirstPaintReadyParticipant]
+        ) {
+            if let participant = view as? any WuiFirstPaintReadyParticipant {
+                participants.append(participant)
             }
             for subview in view.subviews {
-                collectGpuSurfacesRecursive(from: subview, into: &surfaces)
+                collectFirstPaintReadyParticipantsRecursive(from: subview, into: &participants)
             }
         }
 
@@ -455,6 +529,9 @@ private func registerBuiltinComponentsIfNeeded() {
         /// The resolved inner component - never nil after initialization
         private let inner: any WuiComponent
         private var lastAutoLayoutWidth: CGFloat = 0
+        private var pendingWindowMinSizeUpdate = false
+        private var lastWindowMinSize: NSSize = .zero
+        private var lastMinSizeProbeBounds: NSSize = .zero
 
         public var stretchAxis: WuiStretchAxis {
             inner.stretchAxis
@@ -521,14 +598,9 @@ private func registerBuiltinComponentsIfNeeded() {
                 lastAutoLayoutWidth = bounds.width
                 invalidateIntrinsicContentSize()
             }
-
-            // Update window's minimum content size based on current layout
-            // Use zero proposal to ask for minimum required size
-            if let window = window {
-                let minSize = sizeThatFits(WuiProposalSize(width: 0, height: 0))
-                if minSize.width > 0 && minSize.height > 0 {
-                    window.contentMinSize = minSize
-                }
+            if isWindowRootContent(), bounds.size != lastMinSizeProbeBounds {
+                lastMinSizeProbeBounds = bounds.size
+                scheduleWindowMinSizeUpdate()
             }
         }
 
@@ -550,45 +622,144 @@ private func registerBuiltinComponentsIfNeeded() {
             if window != nil {
                 setupRootThemeController(for: self)
                 applyPendingRootTheme()
+                lastMinSizeProbeBounds = .zero
+                if isWindowRootContent() {
+                    scheduleWindowMinSizeUpdate()
+                }
             }
+        }
+
+        func refreshWindowMinSize(force: Bool = false) {
+            guard isWindowRootContent() else { return }
+            updateWindowMinSizeIfNeeded(force: force)
+        }
+
+        private func scheduleWindowMinSizeUpdate() {
+            guard !pendingWindowMinSizeUpdate else { return }
+            pendingWindowMinSizeUpdate = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.pendingWindowMinSizeUpdate = false
+                self.updateWindowMinSizeIfNeeded(force: false)
+            }
+        }
+
+        private func updateWindowMinSizeIfNeeded(force: Bool) {
+            guard let window else { return }
+            guard isWindowRootContent() else { return }
+
+            let minMeasured = sizeThatFits(WuiProposalSize(width: 0, height: 0))
+            let idealMeasured = sizeThatFits(WuiProposalSize())
+            let measuredWidth = resolvedWindowMinAxis(minMeasured.width, fallback: idealMeasured.width)
+            let measuredHeight = resolvedWindowMinAxis(minMeasured.height, fallback: idealMeasured.height)
+
+            let screenBounds = window.screen?.visibleFrame.size ?? NSScreen.main?.visibleFrame.size
+            let screenMaxWidth = screenBounds?.width ?? max(window.contentLayoutRect.width, 1.0)
+            let screenMaxHeight = screenBounds?.height ?? max(window.contentLayoutRect.height, 1.0)
+
+            let previousWidth =
+                resolvedWindowMinAxis(lastWindowMinSize.width, fallback: window.contentMinSize.width)
+            let previousHeight =
+                resolvedWindowMinAxis(lastWindowMinSize.height, fallback: window.contentMinSize.height)
+
+            // Use measured minima when available; otherwise keep the last stable value.
+            var nextWidth = measuredWidth ?? previousWidth ?? 0
+            var nextHeight = measuredHeight ?? previousHeight ?? 0
+
+            nextWidth = min(max(nextWidth, 0), screenMaxWidth)
+            nextHeight = min(max(nextHeight, 0), screenMaxHeight)
+
+            // If this update had no valid measurement for an axis, never lower that axis below
+            // the last committed minimum.
+            if measuredWidth == nil, let previousWidth {
+                nextWidth = max(nextWidth, previousWidth)
+            }
+            if measuredHeight == nil, let previousHeight {
+                nextHeight = max(nextHeight, previousHeight)
+            }
+
+            let nextMin = NSSize(width: nextWidth, height: nextHeight)
+
+            if abs(nextMin.width - lastWindowMinSize.width) > 0.5
+                || abs(nextMin.height - lastWindowMinSize.height) > 0.5
+            {
+                window.contentMinSize = nextMin
+                lastWindowMinSize = nextMin
+            }
+        }
+
+        private func isWindowRootContent() -> Bool {
+            guard let window else { return false }
+            return superview === window.contentView
+        }
+
+        private func resolvedWindowMinAxis(_ value: CGFloat, fallback: CGFloat) -> CGFloat? {
+            if value.isFinite, value > 0 {
+                return value
+            }
+            if fallback.isFinite, fallback > 0 {
+                return fallback
+            }
+            return nil
         }
 
         // MARK: - Async Ready
 
         /// Wait for all GpuSurfaces in the view tree to complete setup and first render.
         /// Call this before showing the window to prevent flicker.
-        public nonisolated func ready() async {
-            let surfaces = await MainActor.run {
-                let surfaces = collectGpuSurfaces()
-                for surface in surfaces {
-                    surface.prepareForReady()
-                }
-                return surfaces
+        @MainActor
+        public func ready() async {
+            let all = collectFirstPaintReadyParticipants()
+            for participant in all {
+                participant.prepareForReady()
             }
-            guard !surfaces.isEmpty else { return }
+            let participants = firstPaintReadyParticipants(all)
+            guard !participants.isEmpty else { return }
 
-            await withTaskGroup(of: Void.self) { group in
-                for surface in surfaces {
-                    group.addTask {
-                        await surface.waitForReady()
-                    }
-                }
-            }
+            let totalTimeoutMs = gpuReadyTotalTimeoutMs()
+            let retryNs = gpuReadyRetryIntervalNs()
+            await waitForFirstPaintReadyParticipants(
+                participants,
+                totalTimeoutMs: totalTimeoutMs,
+                retryNs: retryNs
+            )
         }
 
-        /// Recursively collects all WuiGpuSurface instances from the view hierarchy.
-        private func collectGpuSurfaces() -> [WuiGpuSurface] {
-            var surfaces: [WuiGpuSurface] = []
-            collectGpuSurfacesRecursive(from: self, into: &surfaces)
-            return surfaces
+        private func gpuReadyTotalTimeoutMs() -> Int {
+            let raw = ProcessInfo.processInfo.environment["WATERUI_GPU_READY_TOTAL_TIMEOUT_MS"]
+            let parsed = raw.flatMap(Int.init) ?? 3_000
+            return min(max(parsed, 500), 30_000)
         }
 
-        private func collectGpuSurfacesRecursive(from view: NSView, into surfaces: inout [WuiGpuSurface]) {
-            if let gpuSurface = view as? WuiGpuSurface {
-                surfaces.append(gpuSurface)
+        private func gpuReadyRetryIntervalNs() -> UInt64 {
+            let raw = ProcessInfo.processInfo.environment["WATERUI_GPU_READY_RETRY_INTERVAL_MS"]
+            let parsed = raw.flatMap(UInt64.init) ?? 12
+            return min(max(parsed, 4), 250) * 1_000_000
+        }
+
+        private func firstPaintReadyParticipants(_ all: [any WuiFirstPaintReadyParticipant]) -> [
+            any WuiFirstPaintReadyParticipant
+        ] {
+            let eligible = all.filter { $0.participatesInFirstPaintReady() }
+            return eligible.isEmpty ? all : eligible
+        }
+
+        /// Recursively collects GPU-backed participants that must be ready before first paint.
+        private func collectFirstPaintReadyParticipants() -> [any WuiFirstPaintReadyParticipant] {
+            var participants: [any WuiFirstPaintReadyParticipant] = []
+            collectFirstPaintReadyParticipantsRecursive(from: self, into: &participants)
+            return participants
+        }
+
+        private func collectFirstPaintReadyParticipantsRecursive(
+            from view: NSView,
+            into participants: inout [any WuiFirstPaintReadyParticipant]
+        ) {
+            if let participant = view as? any WuiFirstPaintReadyParticipant {
+                participants.append(participant)
             }
             for subview in view.subviews {
-                collectGpuSurfacesRecursive(from: subview, into: &surfaces)
+                collectFirstPaintReadyParticipantsRecursive(from: subview, into: &participants)
             }
         }
 

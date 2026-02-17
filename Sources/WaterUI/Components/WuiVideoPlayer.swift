@@ -160,9 +160,7 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
         pvc.videoGravity = aspectRatio
 
         addSubview(pvc.view)
-        if let layer = pvc.view.layer {
-            applyResolvedDynamicRange(to: layer, for: self)
-        }
+        applyResolvedDynamicRange(to: pvc.view.layer, for: self)
         self.playerViewController = pvc
 
         // When controls are hidden, make the player transparent to touches
