@@ -4895,7 +4895,8 @@ struct WuiTypeId waterui_gpu_surface_id(void);
 struct WuiGpuSurfaceState *waterui_gpu_surface_init(struct WuiGpuSurface *surface,
                                                     void *layer,
                                                     uint32_t width,
-                                                    uint32_t height);
+                                                    uint32_t height,
+                                                    struct WuiEnv *env);
 
 /**
  * Render a single frame.
@@ -4936,8 +4937,9 @@ bool waterui_gpu_surface_needs_redraw(struct WuiGpuSurfaceState *state);
 /**
  * Query whether backend should keep redraw polling active while idle.
  *
- * This hint is intended for renderers that rely on async signal watchers and
- * cannot wake the native backend directly.
+ * Deprecated: With the push-based `RedrawHandle` model, polling is no longer needed.
+ * Always returns `false`. Backends should rely on `needs_redraw` from render results
+ * and external redraw triggers instead.
  *
  * # Safety
  *
@@ -4986,7 +4988,7 @@ bool waterui_gpu_surface_render_to_metal_texture(struct WuiGpuSurfaceState *stat
 /**
  * Setup the GpuSurface and render the first frame.
  *
- * This function performs async setup (awaited synchronously via `block_on`),
+ * This function performs setup in the synchronous FFI render path,
  * then renders the first frame. Native code should call this before showing
  * the window to ensure all visible GpuSurfaces are ready.
  *
@@ -5252,7 +5254,7 @@ struct WuiViewEffectRenderResult waterui_view_effect_render(struct WuiViewEffect
  *
  * # Returns
  *
- * Pointer to the capture wgpu::Texture, or null if not available.
+ * Pointer to the capture wgpu::Texture.
  *
  * # Safety
  *
@@ -5354,8 +5356,8 @@ struct WuiAppliedFilterState *waterui_applied_filter_init(struct WuiAppliedFilte
 /**
  * Setup the filter synchronously, call callback when ready.
  *
- * This function runs setup to completion using `pollster::block_on`
- * and calls the callback when setup completes.
+ * This function runs setup on the synchronous FFI path and calls the callback
+ * when setup completes.
  *
  * # Arguments
  *
@@ -5759,7 +5761,7 @@ struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
  * Installs a locale into the environment using a predefined locale enum.
  *
  * This installs a `Locale` snapshot into the environment and publishes it
- * to the shared `waterkit-regional` runtime context.
+ * to the shared regional runtime context.
  *
  * # Safety
  * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
@@ -5775,7 +5777,7 @@ void waterui_env_install_locale(struct WuiEnv *env, enum WuiLocale locale);
  * If the locale string is invalid, falls back to English ("en").
  *
  * This installs a `Locale` snapshot into the environment and publishes it
- * to the shared `waterkit-regional` runtime context.
+ * to the shared regional runtime context.
  *
  * # Safety
  * - `env` must be a valid pointer from `waterui_init()` or `waterui_env_new()`.
@@ -6689,146 +6691,6 @@ void waterui_theme_install_font(struct WuiEnv *env,
  * The env pointer must be valid.
  */
 WuiComputed_ResolvedFont *waterui_theme_font(const struct WuiEnv *env, enum WuiFontSlot slot);
-
-/**
- * Legacy function to install all theme values at once.
- *
- * **Deprecated**: Use the new slot-based API instead:
- * - `waterui_theme_install_color_scheme()`
- * - `waterui_theme_install_color()`
- * - `waterui_theme_install_font()`
- *
- * # Safety
- * - `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- * - Each `WuiComputed<...>` pointer may be null; non-null pointers must be valid and were
- *   allocated by WaterUI FFI constructors and are transferred to Rust (consumed).
- */
-void waterui_env_install_theme(struct WuiEnv *env,
-                               WuiComputed_ResolvedColor *background,
-                               WuiComputed_ResolvedColor *surface,
-                               WuiComputed_ResolvedColor *surface_variant,
-                               WuiComputed_ResolvedColor *border,
-                               WuiComputed_ResolvedColor *foreground,
-                               WuiComputed_ResolvedColor *muted_foreground,
-                               WuiComputed_ResolvedColor *accent,
-                               WuiComputed_ResolvedColor *accent_foreground,
-                               WuiComputed_ResolvedFont *body,
-                               WuiComputed_ResolvedFont *title,
-                               WuiComputed_ResolvedFont *headline,
-                               WuiComputed_ResolvedFont *subheadline,
-                               WuiComputed_ResolvedFont *caption);
-
-/**
- * Returns the theme color signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedColor *waterui_theme_color_background(const struct WuiEnv *env);
-
-/**
- * Returns the theme color signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedColor *waterui_theme_color_surface(const struct WuiEnv *env);
-
-/**
- * Returns the theme color signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedColor *waterui_theme_color_surface_variant(const struct WuiEnv *env);
-
-/**
- * Returns the theme color signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedColor *waterui_theme_color_border(const struct WuiEnv *env);
-
-/**
- * Returns the theme color signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedColor *waterui_theme_color_foreground(const struct WuiEnv *env);
-
-/**
- * Returns the theme color signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedColor *waterui_theme_color_muted_foreground(const struct WuiEnv *env);
-
-/**
- * Returns the theme color signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedColor *waterui_theme_color_accent(const struct WuiEnv *env);
-
-/**
- * Returns the theme color signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedColor *waterui_theme_color_accent_foreground(const struct WuiEnv *env);
-
-/**
- * Returns the theme font signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedFont *waterui_theme_font_body(const struct WuiEnv *env);
-
-/**
- * Returns the theme font signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedFont *waterui_theme_font_title(const struct WuiEnv *env);
-
-/**
- * Returns the theme font signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedFont *waterui_theme_font_headline(const struct WuiEnv *env);
-
-/**
- * Returns the theme font signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedFont *waterui_theme_font_subheadline(const struct WuiEnv *env);
-
-/**
- * Returns the theme font signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedFont *waterui_theme_font_caption(const struct WuiEnv *env);
-
-/**
- * Returns the theme font signal for a specific token.
- *
- * # Safety
- * `env` must be a valid pointer returned by `waterui_init()`/`waterui_env_new()`.
- */
-WuiComputed_ResolvedFont *waterui_theme_font_footnote(const struct WuiEnv *env);
 
 /**
  * Calls a ColorScheme watcher with the given value.

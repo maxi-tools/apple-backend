@@ -50,7 +50,7 @@ final class WuiPlain: WuiTextBase, WuiComponent {
     // MARK: - Font Setup
 
     private func setupFontFromEnv(_ env: WuiEnvironment) {
-        guard let fontPtr = waterui_theme_font_body(env.inner) else { return }
+        guard let fontPtr = waterui_theme_font(env.inner, WuiFontSlot_Body) else { return }
 
         let computed = WuiComputed<WuiResolvedFont>(fontPtr)
         self.bodyFont = computed
