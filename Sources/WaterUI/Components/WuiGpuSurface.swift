@@ -40,6 +40,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
     }
 
     private var ffiSurface: CWaterUI.WuiGpuSurface
+    private let envPtr: OpaquePointer
     private var gpuState: OpaquePointer?
     private var isInitializing = false
     private var isActive = true
@@ -73,8 +74,9 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
 
     private let lock = NSLock()
 
-    init(ffiSurface: CWaterUI.WuiGpuSurface) {
+    init(ffiSurface: CWaterUI.WuiGpuSurface, envPtr: OpaquePointer) {
         self.ffiSurface = ffiSurface
+        self.envPtr = envPtr
     }
 
     /// Update pointer position (in surface-local pixel coordinates).
@@ -222,7 +224,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
 
             let state: OpaquePointer? = withUnsafeMutablePointer(to: &self.ffiSurface) {
                 surfacePtr in
-                waterui_gpu_surface_init(surfacePtr, layerPtr, width, height)
+                waterui_gpu_surface_init(surfacePtr, layerPtr, width, height, self.envPtr)
             }
 
             self.lock.lock()
@@ -306,13 +308,6 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
             }
         }
         return true
-    }
-
-    func requiresRedrawPolling() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard isActive, let state = gpuState else { return false }
-        return waterui_gpu_surface_requires_redraw_poll(state)
     }
 
     func waitForIdle() {
@@ -644,7 +639,6 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
     private var captureSuppressionCount = 0
     private let captureSuppressionLock = NSLock()
     private var keepRedrawing = false
-    private var requiresRedrawPolling = false
 
     /// Current pointer pressed state (for tracking press origin)
     private var pressOrigin: CGPoint?
@@ -663,14 +657,14 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let stretchAxis = WuiStretchAxis(waterui_view_stretch_axis(anyview))
         let ffiSurface = waterui_force_as_gpu_surface(anyview)
-        self.init(stretchAxis: stretchAxis, ffiSurface: ffiSurface)
+        self.init(stretchAxis: stretchAxis, ffiSurface: ffiSurface, envPtr: env.inner)
     }
 
     // MARK: - Designated Init
 
-		    init(stretchAxis: WuiStretchAxis, ffiSurface: CWaterUI.WuiGpuSurface) {
+		    init(stretchAxis: WuiStretchAxis, ffiSurface: CWaterUI.WuiGpuSurface, envPtr: OpaquePointer) {
 		        self.stretchAxis = stretchAxis
-		        self.renderState = WuiGpuSurfaceRenderState(ffiSurface: ffiSurface)
+		        self.renderState = WuiGpuSurfaceRenderState(ffiSurface: ffiSurface, envPtr: envPtr)
 
 	        super.init(frame: .zero)
 
@@ -1163,11 +1157,10 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
 	            guard let self else { return }
 	            guard success else { return }
 	            self.isGpuInitialized = true
-                self.requiresRedrawPolling = self.renderState.requiresRedrawPolling()
-	            // Trigger first frames immediately. On-demand surfaces don't have a display link,
-	            // so a transient swapchain timeout could otherwise leave them blank until another
-	            // event marks them dirty.
-	            self.renderFirstFrames()
+            // Trigger first frames immediately. On-demand surfaces don't have a display link,
+            // so a transient swapchain timeout could otherwise leave them blank until another
+            // event marks them dirty.
+            self.renderFirstFrames()
 	        }
 	    }
 
@@ -1269,7 +1262,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
 	    }
 
     private func updateDisplayLinkState() {
-        let shouldTick = keepRedrawing || requiresRedrawPolling
+        let shouldTick = keepRedrawing
         guard shouldTick else {
             stopDisplayLink()
             return
