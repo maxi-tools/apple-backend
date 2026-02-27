@@ -243,6 +243,7 @@ private func registerBuiltinComponentsIfNeeded() {
     registerComponent(WuiPlain.self)
     registerComponent(WuiText.self)
     registerComponent(WuiSpacer.self)
+    registerComponent(WuiResolvedColorView.self)
     registerComponent(WuiSystemIcon.self)
 
     // Interactive components
