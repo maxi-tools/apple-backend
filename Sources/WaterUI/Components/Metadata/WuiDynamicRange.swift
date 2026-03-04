@@ -50,7 +50,7 @@ func applyDynamicRange(_ mode: WuiDynamicRangeMode, to view: PlatformView) {
 }
 
 @MainActor
-func resolveDynamicRange(for view: PlatformView) -> WuiDynamicRangeMode {
+func resolveDynamicRangeOverride(for view: PlatformView) -> WuiDynamicRangeMode? {
     var current: PlatformView? = view
     while let node = current {
         if let tagged = objc_getAssociatedObject(node, &WuiDynamicRangeAssociatedKeys.mode) as? WuiDynamicRangeMode {
@@ -58,7 +58,12 @@ func resolveDynamicRange(for view: PlatformView) -> WuiDynamicRangeMode {
         }
         current = node.superview
     }
-    return .high
+    return nil
+}
+
+@MainActor
+func resolveDynamicRange(for view: PlatformView) -> WuiDynamicRangeMode {
+    resolveDynamicRangeOverride(for: view) ?? .high
 }
 
 @MainActor

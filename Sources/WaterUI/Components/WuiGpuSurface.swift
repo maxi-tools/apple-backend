@@ -175,6 +175,18 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Read Rust-resolved dynamic range preference from GpuSurface.
+    /// Must be called before `waterui_gpu_surface_init` consumes `ffiSurface`.
+    func surfaceDynamicRangePreference() -> WuiDynamicRangeMode {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let preference = withUnsafeMutablePointer(to: &ffiSurface) { surfacePtr in
+            waterui_gpu_surface_hdr_preference(surfacePtr)
+        }
+        return preference.resolved_prefers_hdr ? .high : .standard
+    }
+
     func initializeIfNeeded(
         layerPtr: UnsafeMutableRawPointer,
         width: UInt32,
@@ -646,6 +658,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
     /// Content scale factor for high-DPI displays
     private var currentScaleFactor: CGFloat = 1.0
     private var configuredDynamicRangeMode: WuiDynamicRangeMode?
+    private let surfaceDynamicRangePreference: WuiDynamicRangeMode
 
     /// Gesture tracking state
     private var gestureStartScale: CGFloat = 1.0
@@ -664,7 +677,9 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
 
 		    init(stretchAxis: WuiStretchAxis, ffiSurface: CWaterUI.WuiGpuSurface, envPtr: OpaquePointer) {
 		        self.stretchAxis = stretchAxis
-		        self.renderState = WuiGpuSurfaceRenderState(ffiSurface: ffiSurface, envPtr: envPtr)
+		        let renderState = WuiGpuSurfaceRenderState(ffiSurface: ffiSurface, envPtr: envPtr)
+		        self.renderState = renderState
+		        self.surfaceDynamicRangePreference = renderState.surfaceDynamicRangePreference()
 
 	        super.init(frame: .zero)
 
@@ -1082,9 +1097,9 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
             metalLayer.backgroundColor = NSColor.clear.cgColor  // Ensure no black background
         #endif
 
-        // Configure a default dynamic range. The final mode is resolved from metadata
-        // in initializeGpuIfNeeded() after the view is attached to the hierarchy.
-        configureDynamicRange(.high)
+        // Use Rust-resolved preference immediately so layer format always matches
+        // the swapchain format selection in `waterui_gpu_surface_init`.
+        configureDynamicRange(surfaceDynamicRangePreference)
 
         #if canImport(UIKit)
             // iOS/tvOS: Add metal layer as sublayer
@@ -1119,6 +1134,11 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
             metalLayer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
             metalLayer.wantsExtendedDynamicRangeContent = false
         }
+        let bytesPerPixel = (mode == .high) ? 8 : 4
+        let modeLabel = (mode == .high) ? "high" : "standard"
+        Logger.waterui.info(
+            "[WuiGpuSurface] dynamicRange=\(modeLabel, privacy: .public) pixelFormat=\(metalLayer.pixelFormat.rawValue, privacy: .public) bytesPerPixel=\(bytesPerPixel, privacy: .public)"
+        )
         configuredDynamicRangeMode = mode
     }
 
@@ -1127,9 +1147,8 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
     private func initializeGpuIfNeeded() {
         guard bounds.width > 0 && bounds.height > 0 else { return }
 
-        // Dynamic range metadata is resolved from the nearest ancestor and can be
-        // overridden by nested wrappers (last one wins).
-        configureDynamicRange(resolveDynamicRange(for: self))
+        // Rust is the source of truth for swapchain format; layer follows exactly.
+        configureDynamicRange(surfaceDynamicRangePreference)
 
         #if canImport(UIKit)
             currentScaleFactor = contentScaleFactor
