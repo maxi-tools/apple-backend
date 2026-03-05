@@ -6,10 +6,11 @@ waterui_dir="${repo_root}/waterui"
 
 if [[ -n "${WATERUI_REF:-}" ]]; then
   waterui_ref="${WATERUI_REF}"
-elif [[ "${GITHUB_BASE_REF:-}" == "dev" || "${GITHUB_REF_NAME:-}" == "dev" ]]; then
-  waterui_ref="dev"
-else
+elif [[ "${GITHUB_BASE_REF:-}" == "main" || "${GITHUB_REF_NAME:-}" == "main" ]]; then
   waterui_ref="main"
+else
+  # Default all non-main flows (feature branches and dev PRs) to waterui/dev.
+  waterui_ref="dev"
 fi
 
 echo "Using waterui ref: ${waterui_ref}"
