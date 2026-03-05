@@ -525,11 +525,7 @@ final class WuiAppliedFilter: PlatformView, WuiComponent, WuiFirstPaintReadyPart
                 }
             }
 
-            if Thread.isMainThread {
-                mainBlock()
-            } else {
-                DispatchQueue.main.sync(execute: mainBlock)
-            }
+            self.runOnMainThreadSynchronously(mainBlock)
 
             guard capturePrepared, let device, let captureTexture, let nativeCaptureFence else {
                 return false
@@ -561,6 +557,20 @@ final class WuiAppliedFilter: PlatformView, WuiComponent, WuiFirstPaintReadyPart
             }
             return true
         }
+    }
+
+    private func runOnMainThreadSynchronously(_ work: @escaping () -> Void) {
+        if Thread.isMainThread {
+            work()
+            return
+        }
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.main.async {
+            work()
+            group.leave()
+        }
+        group.wait()
     }
 
     private func withVisibleContentForCapture(_ work: () -> Void) {

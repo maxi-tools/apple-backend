@@ -386,7 +386,7 @@ private func drawGpuSurface(
     )
 
     var pixelBytes = [UInt8](repeating: 0, count: Int(pixelWidth) * Int(pixelHeight) * 4)
-    for i in 0..<(Int(pixelWidth) * Int(pixelHeight)) {
+    for i in 0 ..< (Int(pixelWidth) * Int(pixelHeight)) {
         let r = float16ToFloat32(floatPixels[i * 4])
         let g = float16ToFloat32(floatPixels[i * 4 + 1])
         let b = float16ToFloat32(floatPixels[i * 4 + 2])

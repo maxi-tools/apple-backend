@@ -61,7 +61,9 @@ final class WuiStepper: PlatformView, WuiComponent {
         super.init(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         configureSubviews()
         configureStepper()
-        startBindingWatcher()
+        updateLabel(label, force: true)
+        updateStep(step, force: true)
+        updateBinding(binding, force: true)
     }
 
     @available(*, unavailable)
@@ -105,8 +107,8 @@ final class WuiStepper: PlatformView, WuiComponent {
 
     // MARK: - Update Methods
 
-    func updateLabel(_ newLabel: WuiAnyView) {
-        guard newLabel !== labelView else { return }
+    func updateLabel(_ newLabel: WuiAnyView, force: Bool = false) {
+        guard force || newLabel !== labelView else { return }
         labelView.removeFromSuperview()
 
         labelView = newLabel
@@ -130,8 +132,8 @@ final class WuiStepper: PlatformView, WuiComponent {
         ])
     }
 
-    func updateBinding(_ newBinding: WuiBinding<Int32>) {
-        guard newBinding !== binding else { return }
+    func updateBinding(_ newBinding: WuiBinding<Int32>, force: Bool = false) {
+        guard force || newBinding !== binding else { return }
         bindingWatcher = nil
         binding = newBinding
         #if canImport(UIKit)
@@ -142,8 +144,8 @@ final class WuiStepper: PlatformView, WuiComponent {
         startBindingWatcher()
     }
 
-    func updateStep(_ newStep: WuiComputed<Int32>) {
-        guard newStep !== step else { return }
+    func updateStep(_ newStep: WuiComputed<Int32>, force: Bool = false) {
+        guard force || newStep !== step else { return }
         step = newStep
         #if canImport(UIKit)
         stepper.stepValue = Double(newStep.value)

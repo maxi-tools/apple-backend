@@ -107,12 +107,6 @@ func isMetadataComponent(_ component: any WuiComponent) -> Bool {
 
 // MARK: - Root Theme Controller
 
-#if canImport(UIKit)
-    typealias PlatformWindow = UIWindow
-#elseif canImport(AppKit)
-    typealias PlatformWindow = NSWindow
-#endif
-
 /// Controls the window's appearance based on the root component's environment theme.
 @MainActor
 final class RootThemeController {
@@ -307,7 +301,6 @@ private func registerBuiltinComponentsIfNeeded() {
     registerComponent(WuiNavigationStack.self)
     registerComponent(WuiNavigationView.self)
     registerComponent(WuiTabs.self)
-
 
     // GPU components
     registerComponent(WuiGpuSurface.self)
@@ -681,9 +674,9 @@ private func registerBuiltinComponentsIfNeeded() {
 
             let nextMin = NSSize(width: nextWidth, height: nextHeight)
 
-            if abs(nextMin.width - lastWindowMinSize.width) > 0.5
+            let didChange = abs(nextMin.width - lastWindowMinSize.width) > 0.5
                 || abs(nextMin.height - lastWindowMinSize.height) > 0.5
-            {
+            if force || didChange {
                 window.contentMinSize = nextMin
                 lastWindowMinSize = nextMin
             }

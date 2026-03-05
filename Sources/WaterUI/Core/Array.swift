@@ -77,28 +77,6 @@ final class WuiRawArray {
         self.inner = innerArray
     }
 
-    subscript<T>(index: Int) -> T {
-        get {
-            let slice = (inner!.vtable.slice)(inner!.data)
-            let head = slice.head!
-            let len = Int(slice.len)
-            precondition(index >= 0 && index < len, "Index out of bounds")
-
-            let typedPtr = head.assumingMemoryBound(to: T.self)
-            return typedPtr[index]
-        }
-
-        set {
-            let slice = (inner!.vtable.slice)(inner!.data)
-            let head = slice.head!
-            let len = Int(slice.len)
-            precondition(index >= 0 && index < len, "Index out of bounds")
-
-            let typedPtr = head.assumingMemoryBound(to: T.self)
-            typedPtr[index] = newValue
-        }
-    }
-
     func toArray<T>() -> [T] {
         let slice = (inner!.vtable.slice)(inner!.data)
         let len = Int(slice.len)
@@ -115,7 +93,6 @@ final class WuiRawArray {
         if let inner = inner {
             inner.vtable.drop(inner.data)
         }
-
     }
 }
 
@@ -136,16 +113,6 @@ struct WuiArray<T> {
 
     func intoInner() -> CWaterUI.WuiArray {
         self.inner.intoInner()
-    }
-
-    subscript(index: Int) -> T {
-        get {
-            self.inner[index]
-        }
-
-        set {
-            self.inner[index] = newValue
-        }
     }
 
     func toArray() -> [T] {
@@ -179,7 +146,6 @@ extension WuiArray<OpaquePointer> {
         let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)
         self.init(c: raw)
     }
-
 }
 
 extension WuiArray<CWaterUI.WuiStyledChunk> {
@@ -212,5 +178,4 @@ struct WuiStr {
     func intoInner() -> CWaterUI.WuiStr {
         unsafeBitCast(self.inner.intoInner(), to: CWaterUI.WuiStr.self)
     }
-
 }

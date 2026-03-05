@@ -7,15 +7,12 @@
 // Supports swipe-to-delete when items have delete handlers.
 
 import CWaterUI
-import OSLog
 
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
 import AppKit
 #endif
-
-private let logger = Logger(subsystem: "dev.waterui", category: "WuiList")
 
 /// Data for a single list item including its content and deletable state.
 private struct ListItemData {
@@ -139,19 +136,14 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
         watchedEnd = range.end
         var skipInitialEmission = true
         contentsWatcher = watchAnyViewsRangeIds(contents, start: range.start, end: range.end) {
-            [weak self] _, metadata in
+            [weak self] ids, metadata in
             if skipInitialEmission {
                 skipInitialEmission = false
                 return
             }
             guard let self else { return }
-            self.reloadFromRust(animated: metadata.animation != nil)
+            self.applyRustUpdate(ids: ids, metadata: metadata)
         }
-    }
-
-    private func applyRustUpdate(ids: [Int32], metadata: WuiWatcherMetadata) {
-        let animated = metadata.animation != nil
-        updateFromRust(ids: ids, animated: animated)
     }
 
     private func reloadFromRust(animated: Bool) {
@@ -170,7 +162,7 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
         var newItems: [ListItemData] = []
         newItems.reserveCapacity(count)
 
-        for i in 0..<count {
+        for i in 0 ..< count {
             guard let viewPtr = waterui_anyviews_get_view(contents.ptr, UInt(i)) else {
                 fatalError("List item view pointer is null at index \(i)")
             }
@@ -265,7 +257,10 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: WuiListCell.reuseIdentifier, for: indexPath) as! WuiListCell
+        let dequeuedCell = tableView.dequeueReusableCell(withIdentifier: WuiListCell.reuseIdentifier, for: indexPath)
+        guard let cell = dequeuedCell as? WuiListCell else {
+            fatalError("Expected WuiListCell for reuse identifier \(WuiListCell.reuseIdentifier)")
+        }
         let item = itemViews[indexPath.row]
         cell.configure(with: item.view)
         return cell
@@ -555,13 +550,13 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
         watchedEnd = range.end
         var skipInitialEmission = true
         contentsWatcher = watchAnyViewsRangeIds(contents, start: range.start, end: range.end) {
-            [weak self] _, metadata in
+            [weak self] ids, metadata in
             if skipInitialEmission {
                 skipInitialEmission = false
                 return
             }
             guard let self else { return }
-            self.reloadFromRust(animated: metadata.animation != nil)
+            self.applyRustUpdate(ids: ids, metadata: metadata)
         }
     }
 
@@ -586,7 +581,7 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
         var newItems: [ListItemData] = []
         newItems.reserveCapacity(count)
 
-        for i in 0..<count {
+        for i in 0 ..< count {
             guard let viewPtr = waterui_anyviews_get_view(contents.ptr, UInt(i)) else {
                 fatalError("List item view pointer is null at index \(i)")
             }

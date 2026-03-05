@@ -54,11 +54,7 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
         self.wuiLayout = layout
         self.childViews = children
         super.init(frame: .zero)
-
-        for child in children {
-            child.translatesAutoresizingMaskIntoConstraints = true
-            addSubview(child)
-        }
+        setChildren(children)
     }
 
     @available(*, unavailable)

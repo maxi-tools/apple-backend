@@ -306,14 +306,6 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
 
     // MARK: - State
 
-    func canGoBack() -> Bool {
-        webView.canGoBack
-    }
-
-    func canGoForward() -> Bool {
-        webView.canGoForward
-    }
-
     // MARK: - Configuration
 
     func setUserAgent(_ userAgent: String) {
@@ -585,18 +577,19 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
                     return WuiStr(string: wrapper.cachedCookies).intoInner()
                 }
 
-                let semaphore = DispatchSemaphore(value: 0)
+                let group = DispatchGroup()
                 var latest = wrapper.cachedCookies
+                group.enter()
                 DispatchQueue.main.async {
                     let store = wrapper.webView.configuration.websiteDataStore.httpCookieStore
                     store.getAllCookies { cookies in
                         let serialized = WebViewWrapper.serializeCookies(cookies)
                         wrapper.cachedCookies = serialized
                         latest = serialized
-                        semaphore.signal()
+                        group.leave()
                     }
                 }
-                _ = semaphore.wait(timeout: .now() + .milliseconds(500))
+                _ = group.wait(timeout: .now() + .milliseconds(500))
                 return WuiStr(string: latest).intoInner()
             },
             run_javascript: { rawPtr, script, callback in
@@ -682,7 +675,7 @@ extension WebViewWrapper: WKNavigationDelegate {
             }
 
             let statusCode = response.statusCode
-            guard (300..<400).contains(statusCode) else {
+            guard (300 ..< 400).contains(statusCode) else {
                 decisionHandler(.allow)
                 return
             }

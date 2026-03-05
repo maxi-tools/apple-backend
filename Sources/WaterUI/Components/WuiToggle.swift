@@ -67,9 +67,9 @@ final class WuiToggle: PlatformView, WuiComponent {
         super.init(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         createToggleControl()
         configureSubviews()
-        syncToggleState()
         setupAction()
-        startWatchingBinding()
+        updateLabel(label, force: true)
+        updateBinding(binding, force: true)
     }
 
     // MARK: - Toggle Control Creation
@@ -261,8 +261,8 @@ final class WuiToggle: PlatformView, WuiComponent {
 
     // MARK: - Update Methods
 
-    func updateLabel(_ label: WuiAnyView) {
-        guard label !== labelView else { return }
+    func updateLabel(_ label: WuiAnyView, force: Bool = false) {
+        guard force || label !== labelView else { return }
         labelView.removeFromSuperview()
         labelView = label
         labelView.translatesAutoresizingMaskIntoConstraints = false
@@ -276,8 +276,8 @@ final class WuiToggle: PlatformView, WuiComponent {
         ])
     }
 
-    func updateBinding(_ newBinding: WuiBinding<Bool>) {
-        guard newBinding !== binding else { return }
+    func updateBinding(_ newBinding: WuiBinding<Bool>, force: Bool = false) {
+        guard force || newBinding !== binding else { return }
         bindingWatcher = nil
         binding = newBinding
         syncToggleState()

@@ -30,7 +30,6 @@ final class WuiSecureField: PlatformView, WuiComponent {
     #elseif canImport(AppKit)
     private let textField = NSSecureTextField()
     #endif
-    private var bindingWatcher: WatcherGuard?
     private var isSyncingFromBinding = false
 
     private var labelView: WuiAnyView
@@ -39,6 +38,7 @@ final class WuiSecureField: PlatformView, WuiComponent {
 
     // Layout constants
     private let verticalSpacing: CGFloat = 4.0
+    private var labelConstraints: [NSLayoutConstraint] = []
 
     // MARK: - WuiComponent Init
 
@@ -70,9 +70,10 @@ final class WuiSecureField: PlatformView, WuiComponent {
         super.init(frame: .zero)
         configureSubviews()
         configureTextField()
+        updateLabel(label, force: true)
+        updateBinding(binding, force: true)
         // Note: We don't set initial text value from binding for security
         // SecureField should always start empty on the UI side
-        startBindingWatcher()
     }
 
     @available(*, unavailable)
@@ -112,31 +113,34 @@ final class WuiSecureField: PlatformView, WuiComponent {
 
     // MARK: - Update Methods
 
-    func updateLabel(_ newLabel: WuiAnyView) {
-        guard newLabel !== labelView else { return }
+    func updateLabel(_ newLabel: WuiAnyView, force: Bool = false) {
+        guard force || newLabel !== labelView else { return }
         labelView.removeFromSuperview()
-
         labelView = newLabel
-        labelView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(labelView)
-
-        // Re-establish constraints for new label
-        NSLayoutConstraint.activate([
-            labelView.topAnchor.constraint(equalTo: topAnchor),
-            labelView.leadingAnchor.constraint(equalTo: leadingAnchor),
-        ])
+        setupLabelConstraints()
     }
 
-    func updateBinding(_ newBinding: WuiBinding<WuiStr>) {
-        guard newBinding !== binding else { return }
-        bindingWatcher = nil
+    func updateBinding(_ newBinding: WuiBinding<WuiStr>, force: Bool = false) {
+        guard force || newBinding !== binding else { return }
         binding = newBinding
-        // For security, we don't update the text field from binding
-        // User must re-enter the secure value
-        startBindingWatcher()
     }
 
     // MARK: - Configuration
+
+    private func setupLabelConstraints() {
+        NSLayoutConstraint.deactivate(labelConstraints)
+        labelView.translatesAutoresizingMaskIntoConstraints = false
+        textField.translatesAutoresizingMaskIntoConstraints = false
+        labelConstraints = [
+            labelView.topAnchor.constraint(equalTo: topAnchor),
+            labelView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            textField.topAnchor.constraint(equalTo: labelView.bottomAnchor, constant: verticalSpacing),
+            textField.leadingAnchor.constraint(equalTo: leadingAnchor),
+            textField.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(labelConstraints)
+    }
 
     private func configureSubviews() {
         // Use AutoLayout for internal component layout
@@ -145,18 +149,7 @@ final class WuiSecureField: PlatformView, WuiComponent {
 
         addSubview(labelView)
         addSubview(textField)
-
-        // Layout: label at top-leading, text field below spanning full width
-        NSLayoutConstraint.activate([
-            // Label: top-leading
-            labelView.topAnchor.constraint(equalTo: topAnchor),
-            labelView.leadingAnchor.constraint(equalTo: leadingAnchor),
-
-            // Text field: below label, full width
-            textField.topAnchor.constraint(equalTo: labelView.bottomAnchor, constant: verticalSpacing),
-            textField.leadingAnchor.constraint(equalTo: leadingAnchor),
-            textField.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
+        setupLabelConstraints()
     }
 
     private func configureTextField() {
@@ -174,12 +167,6 @@ final class WuiSecureField: PlatformView, WuiComponent {
         textField.isSelectable = true
         textField.delegate = self
         #endif
-    }
-
-    private func startBindingWatcher() {
-        // We intentionally don't watch the binding to update the text field
-        // For security reasons, secure fields should not display their values
-        // The binding only flows from the text field TO the binding, not vice versa
     }
 
     #if canImport(UIKit)

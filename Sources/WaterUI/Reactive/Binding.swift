@@ -9,22 +9,19 @@ import CWaterUI
 import Foundation
 
 @_silgen_name("waterui_read_binding_styled_str")
-private func wui_read_binding_styled_str(_ binding: OpaquePointer?) -> CWaterUI.WuiStyledStr
+private func wui_read_binding_styled_str(_ _: OpaquePointer?) -> CWaterUI.WuiStyledStr
 
 @_silgen_name("waterui_watch_binding_styled_str")
 private func wui_watch_binding_styled_str(
-    _ binding: OpaquePointer?,
-    _ watcher: OpaquePointer?
+    _ _: OpaquePointer?,
+    _ _: OpaquePointer?
 ) -> OpaquePointer?
 
 @_silgen_name("waterui_drop_binding_styled_str")
-private func wui_drop_binding_styled_str(_ binding: OpaquePointer?)
-
-@_silgen_name("waterui_set_binding_styled_str_plain")
-private func wui_set_binding_styled_str_plain(_ binding: OpaquePointer?, _ value: CWaterUI.WuiStr)
+private func wui_drop_binding_styled_str(_ _: OpaquePointer?)
 
 @_silgen_name("waterui_set_binding_styled_str")
-private func wui_set_binding_styled_str(_ binding: OpaquePointer?, _ value: CWaterUI.WuiStyledStr)
+private func wui_set_binding_styled_str(_ _: OpaquePointer?, _ _: CWaterUI.WuiStyledStr)
 
 @MainActor
 final class WuiBinding<T> {
@@ -68,11 +65,6 @@ final class WuiBinding<T> {
         }
     }
 
-
-    func compute() -> T {
-        readFn(inner)
-    }
-
     func watch(_ f: @escaping (T, WuiWatcherMetadata) -> Void) -> WatcherGuard {
         watchFn(inner, f)
     }
@@ -97,21 +89,6 @@ private extension WuiBinding {
 }
 
 extension WuiBinding where T == WuiStr {
-    convenience init(_ inner: OpaquePointer) {
-        self.init(
-            inner: inner,
-            read: { inner in WuiStr(waterui_read_binding_str(inner)) },
-            watch: { inner, f in
-                let g = waterui_watch_binding_str(inner, makeStrWatcher(f))
-                return WatcherGuard(g!)
-            },
-            set: { inner, value in
-                waterui_set_binding_str(inner, value.intoInner())
-            },
-            drop: waterui_drop_binding_str
-        )
-    }
-
     convenience init(secure inner: OpaquePointer) {
         self.init(
             inner: inner,
@@ -143,11 +120,6 @@ extension WuiBinding where T == WuiStyledStr {
             },
             drop: wui_drop_binding_styled_str
         )
-    }
-
-    func setPlain(_ plain: String) {
-        let text = WuiStr(string: plain)
-        wui_set_binding_styled_str_plain(inner, text.intoInner())
     }
 }
 

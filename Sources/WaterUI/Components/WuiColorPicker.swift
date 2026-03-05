@@ -13,7 +13,6 @@ import UIKit
 import AppKit
 #endif
 
-
 #if canImport(UIKit)
 @MainActor
 final class WuiColorPicker: PlatformView, WuiComponent {
@@ -187,7 +186,6 @@ final class WuiColorPicker: PlatformView, WuiComponent {
         ) else { return }
         binding.set(colorPtr)
     }
-
 }
 
 #elseif canImport(AppKit)
@@ -382,6 +380,5 @@ final class WuiColorPicker: PlatformView, WuiComponent {
         ) else { return }
         binding.set(colorPtr)
     }
-
 }
 #endif

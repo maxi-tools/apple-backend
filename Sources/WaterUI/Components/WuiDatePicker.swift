@@ -6,15 +6,12 @@
 // In a stack, it takes only the space it needs.
 
 import CWaterUI
-import os.log
 
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
 import AppKit
 #endif
-
-private let logger = Logger(subsystem: "dev.waterui", category: "WuiDatePicker")
 
 @MainActor
 final class WuiDatePicker: PlatformView, WuiComponent {

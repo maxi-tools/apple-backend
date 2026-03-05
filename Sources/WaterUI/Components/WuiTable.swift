@@ -15,10 +15,12 @@ import AppKit
 // MARK: - Column Data
 
 /// Represents a table column with a header label and rows of content
+#if canImport(UIKit)
 private struct TableColumnData {
     let label: PlatformView
     let rows: [WuiAnyView]
 }
+#endif
 
 // MARK: - UIKit Implementation
 
@@ -69,7 +71,7 @@ final class WuiTable: PlatformView, WuiComponent {
 
         columns.removeAll()
 
-        for i in 0..<Int(slice.len) {
+        for i in 0 ..< Int(slice.len) {
             let col = head.advanced(by: i).pointee
             let column = parseColumn(col)
             columns.append(column)
@@ -86,7 +88,7 @@ final class WuiTable: PlatformView, WuiComponent {
         var rows: [WuiAnyView] = []
         if let rowsPtr = ffiCol.rows {
             let count = waterui_anyviews_len(rowsPtr)
-            for i in 0..<count {
+            for i in 0 ..< count {
                 if let viewPtr = waterui_anyviews_get_view(rowsPtr, i) {
                     let rowView = WuiAnyView(anyview: viewPtr, env: env)
                     rows.append(rowView)
@@ -140,7 +142,7 @@ final class WuiTable: PlatformView, WuiComponent {
         yOffset += rowHeight + rowSpacing
 
         // Build data rows
-        for rowIdx in 0..<numRows {
+        for rowIdx in 0 ..< numRows {
             xOffset = 0
             for (colIdx, column) in columns.enumerated() {
                 let cellWidth = columnWidths[colIdx]
@@ -302,7 +304,7 @@ final class WuiTable: PlatformView, WuiComponent {
         nativeColumns.removeAll()
         cellViews.removeAll()
 
-        for i in 0..<Int(slice.len) {
+        for i in 0 ..< Int(slice.len) {
             let col = head.advanced(by: i).pointee
             let column = parseColumn(col, index: i)
             nativeColumns.append(column)
@@ -319,7 +321,7 @@ final class WuiTable: PlatformView, WuiComponent {
         var rows: [WuiAnyView] = []
         if let rowsPtr = ffiCol.rows {
             let count = waterui_anyviews_len(rowsPtr)
-            for i in 0..<count {
+            for i in 0 ..< count {
                 if let viewPtr = waterui_anyviews_get_view(rowsPtr, i) {
                     let rowView = WuiAnyView(anyview: viewPtr, env: env)
                     rows.append(rowView)

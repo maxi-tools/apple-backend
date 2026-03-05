@@ -95,10 +95,6 @@ protocol WuiComponent: PlatformView {
     /// Used for O(1) 128-bit value-based registry lookup.
     static var rawId: CWaterUI.WuiTypeId { get }
 
-    /// String identifier for this component type (hex representation for debugging)
-    /// Computed from rawId for debugging and logging purposes.
-    static var id: String { get }
-
     /// Creates an instance from an FFI anyview pointer and environment.
     /// This is called by PlatformRenderer when resolving views.
     init(anyview: OpaquePointer, env: WuiEnvironment)
@@ -125,16 +121,6 @@ extension WuiComponent {
     static var viewId: WuiViewId {
         WuiViewId(rawId)
     }
-
-    /// String ID derived from rawId (for debugging/logging)
-    static var id: String {
-        viewId.toString()
-    }
-}
-
-@inline(__always)
-func decodeViewIdentifier(_ raw: CWaterUI.WuiTypeId) -> String {
-    WuiViewId(raw).toString()
 }
 
 // MARK: - Reactive Signal Infrastructure
@@ -352,12 +338,6 @@ final class ReactiveFontSignal {
             watchers.append(watcher)
         }
 
-        func notifyWatchers() {
-            for watcher in watchers {
-                waterui_call_watcher_resolved_font(watcher, font)
-            }
-        }
-
         func cleanup() {
             for watcher in watchers {
                 waterui_drop_watcher_resolved_font(watcher)
@@ -404,11 +384,6 @@ final class ReactiveFontSignal {
             )
         }
         return computedPtr
-    }
-
-    func setValue(size: Float, weight: WuiFontWeight) {
-        state.font = waterui_resolved_font_new(size, weight)
-        state.notifyWatchers()
     }
 }
 
@@ -621,13 +596,13 @@ public final class ThemeBridge {
             // UIFont.Weight ranges from -1.0 (ultra-light) to 1.0 (black), with 0.0 being regular
             switch weight {
             case ...(-0.8): return WuiFontWeight_Thin
-            case (-0.8)...(-0.6): return WuiFontWeight_UltraLight
-            case (-0.6)...(-0.4): return WuiFontWeight_Light
-            case (-0.4)...(0.0): return WuiFontWeight_Normal
-            case (0.0)...(0.23): return WuiFontWeight_Medium
-            case (0.23)...(0.3): return WuiFontWeight_SemiBold
-            case (0.3)...(0.5): return WuiFontWeight_Bold
-            case (0.5)...(0.8): return WuiFontWeight_UltraBold
+            case (-0.8) ... (-0.6): return WuiFontWeight_UltraLight
+            case (-0.6) ... (-0.4): return WuiFontWeight_Light
+            case (-0.4) ... (0.0): return WuiFontWeight_Normal
+            case (0.0) ... (0.23): return WuiFontWeight_Medium
+            case (0.23) ... (0.3): return WuiFontWeight_SemiBold
+            case (0.3) ... (0.5): return WuiFontWeight_Bold
+            case (0.5) ... (0.8): return WuiFontWeight_UltraBold
             default: return WuiFontWeight_Black
             }
         }
@@ -651,13 +626,13 @@ public final class ThemeBridge {
             // NSFont.Weight ranges from -1.0 to 1.0, similar to UIFont.Weight
             switch weight {
             case ...(-0.8): return WuiFontWeight_Thin
-            case (-0.8)...(-0.6): return WuiFontWeight_UltraLight
-            case (-0.6)...(-0.4): return WuiFontWeight_Light
-            case (-0.4)...(0.0): return WuiFontWeight_Normal
-            case (0.0)...(0.23): return WuiFontWeight_Medium
-            case (0.23)...(0.3): return WuiFontWeight_SemiBold
-            case (0.3)...(0.5): return WuiFontWeight_Bold
-            case (0.5)...(0.8): return WuiFontWeight_UltraBold
+            case (-0.8) ... (-0.6): return WuiFontWeight_UltraLight
+            case (-0.6) ... (-0.4): return WuiFontWeight_Light
+            case (-0.4) ... (0.0): return WuiFontWeight_Normal
+            case (0.0) ... (0.23): return WuiFontWeight_Medium
+            case (0.23) ... (0.3): return WuiFontWeight_SemiBold
+            case (0.3) ... (0.5): return WuiFontWeight_Bold
+            case (0.5) ... (0.8): return WuiFontWeight_UltraBold
             default: return WuiFontWeight_Black
             }
         }

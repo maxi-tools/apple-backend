@@ -59,7 +59,6 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
     private var onEvent: CWaterUI.WuiFn_WuiVideoEvent
     private var sourceWatcher: WatcherGuard?
     private var volumeWatcher: WatcherGuard?
-    private var playerItemObserver: NSKeyValueObservation?
     private var statusObserver: NSKeyValueObservation?
     private var bufferEmptyObserver: NSKeyValueObservation?
     private var likelyToKeepUpObserver: NSKeyValueObservation?

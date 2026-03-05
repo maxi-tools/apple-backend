@@ -6,15 +6,12 @@
 // In a stack, it takes only the space it needs.
 
 import CWaterUI
-import os.log
 
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
 import AppKit
 #endif
-
-private let logger = Logger(subsystem: "dev.waterui", category: "WuiPicker")
 
 /// Represents a picker item with an id and text content
 struct PickerItemData {
@@ -136,7 +133,7 @@ final class WuiPicker: PlatformView, WuiComponent {
         }
 
         var newItems: [PickerItemData] = []
-        for i in 0..<slice.len {
+        for i in 0 ..< slice.len {
             let item = head.advanced(by: Int(i)).pointee
             let text = extractText(from: item.content)
             newItems.append(PickerItemData(id: item.tag, text: text))

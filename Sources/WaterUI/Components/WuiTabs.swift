@@ -84,7 +84,7 @@ final class WuiTabs: PlatformView, WuiComponent {
         let slice = array.vtable.slice(array.data)
         guard let head = slice.head else { return }
 
-        for i in 0..<slice.len {
+        for i in 0 ..< slice.len {
             let tab = head.advanced(by: Int(i)).pointee
             let labelView = WuiAnyView(anyview: tab.label, env: env)
             // tab.content is already an OpaquePointer (WuiTabContent*)

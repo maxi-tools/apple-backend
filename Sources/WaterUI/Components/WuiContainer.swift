@@ -67,13 +67,17 @@ final class WuiContainer: PlatformView, WuiComponent {
     // MARK: - Child Loading
 
     private func loadAllChildren() {
-        childViews.reserveCapacity(anyViews.count)
-        for i in 0..<anyViews.count {
+        var children: [WuiAnyView] = []
+        children.reserveCapacity(anyViews.count)
+        var seenIds = Set<Int32>()
+        for i in 0 ..< anyViews.count {
+            let id = getViewId(at: i).inner
+            precondition(seenIds.insert(id).inserted, "Duplicate child view id in WuiContainer: \(id)")
             let child = anyViews.getView(at: i, env: env)
             child.translatesAutoresizingMaskIntoConstraints = true
-            childViews.append(child)
-            addSubview(child)
+            children.append(child)
         }
+        setChildren(children)
     }
 
     /// Get the unique view ID at the specified index.

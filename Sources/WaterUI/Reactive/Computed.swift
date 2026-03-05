@@ -37,14 +37,9 @@ final class WuiComputed<T> {
         }
     }
 
-    func compute() -> T {
-        readFn(inner)
-    }
-
     func watch(_ f: @escaping (T, WuiWatcherMetadata) -> Void) -> WatcherGuard {
         watchFn(inner, f)
     }
-
 
     @MainActor deinit {
         dropFn(inner)

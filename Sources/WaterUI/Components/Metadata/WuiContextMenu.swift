@@ -86,7 +86,7 @@ final class WuiContextMenu: PlatformView, WuiComponent {
         let slice = chunks.vtable.slice(chunks.data.assumingMemoryBound(to: Void.self))
         guard let head = slice.head else { return "" }
 
-        for i in 0..<slice.len {
+        for i in 0 ..< slice.len {
             let chunk = head.advanced(by: Int(i)).pointee
             let text = WuiStr(chunk.text)
             result += text.toString()

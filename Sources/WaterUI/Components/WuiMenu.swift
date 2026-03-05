@@ -1,13 +1,10 @@
 import CWaterUI
-import os
 
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
 import AppKit
 #endif
-
-private let logger = Logger(subsystem: "dev.waterui", category: "WuiMenu")
 
 /// Menu component that displays a dropdown menu when tapped.
 /// - iOS: Uses UIButton with UIMenu
@@ -121,7 +118,7 @@ final class WuiMenu: PlatformView, WuiComponent {
         let slice = chunks.vtable.slice(chunks.data.assumingMemoryBound(to: Void.self))
         guard let head = slice.head else { return "" }
 
-        for i in 0..<slice.len {
+        for i in 0 ..< slice.len {
             let chunk = head.advanced(by: Int(i)).pointee
             let text = WuiStr(chunk.text)
             result += text.toString()

@@ -43,8 +43,7 @@ final class WuiSlider: PlatformView, WuiComponent {
     private let horizontalSpacing: CGFloat = 8.0
 
     // AutoLayout constraints (stored for dynamic updates)
-    private var sliderLeadingConstraint: NSLayoutConstraint?
-    private var sliderTrailingConstraint: NSLayoutConstraint?
+    private var activeConstraints: [NSLayoutConstraint] = []
 
     // MARK: - WuiComponent Init
 
@@ -84,7 +83,11 @@ final class WuiSlider: PlatformView, WuiComponent {
         super.init(frame: .zero)
         configureSubviews()
         configureSlider()
-        startBindingWatcher()
+        updateLabel(label, force: true)
+        updateMinLabel(minLabel, force: true)
+        updateMaxLabel(maxLabel, force: true)
+        updateRange(range)
+        updateBinding(binding, force: true)
     }
 
     @available(*, unavailable)
@@ -128,6 +131,8 @@ final class WuiSlider: PlatformView, WuiComponent {
     #endif
 
     private func setupConstraints() {
+        NSLayoutConstraint.deactivate(activeConstraints)
+
         labelView.translatesAutoresizingMaskIntoConstraints = false
         minLabelView.translatesAutoresizingMaskIntoConstraints = false
         slider.translatesAutoresizingMaskIntoConstraints = false
@@ -145,7 +150,8 @@ final class WuiSlider: PlatformView, WuiComponent {
         #endif
 
         // Label at top-leading
-        NSLayoutConstraint.activate([
+        var constraints = [NSLayoutConstraint]()
+        constraints.append(contentsOf: [
             labelView.topAnchor.constraint(equalTo: topAnchor),
             labelView.leadingAnchor.constraint(equalTo: leadingAnchor),
         ])
@@ -154,94 +160,57 @@ final class WuiSlider: PlatformView, WuiComponent {
         // All vertically centered relative to each other, below label
 
         // Min label: leading, below label
-        NSLayoutConstraint.activate([
+        constraints.append(contentsOf: [
             minLabelView.topAnchor.constraint(equalTo: labelView.bottomAnchor, constant: verticalSpacing),
             minLabelView.leadingAnchor.constraint(equalTo: leadingAnchor),
             minLabelView.centerYAnchor.constraint(equalTo: slider.centerYAnchor),
         ])
 
         // Max label: trailing, aligned with slider row
-        NSLayoutConstraint.activate([
+        constraints.append(contentsOf: [
             maxLabelView.trailingAnchor.constraint(equalTo: trailingAnchor),
             maxLabelView.centerYAnchor.constraint(equalTo: slider.centerYAnchor),
         ])
 
         // Slider: between minLabel and maxLabel, below label
-        sliderLeadingConstraint = slider.leadingAnchor.constraint(equalTo: minLabelView.trailingAnchor, constant: horizontalSpacing)
-        sliderTrailingConstraint = slider.trailingAnchor.constraint(equalTo: maxLabelView.leadingAnchor, constant: -horizontalSpacing)
-
-        NSLayoutConstraint.activate([
+        constraints.append(contentsOf: [
             slider.topAnchor.constraint(equalTo: labelView.bottomAnchor, constant: verticalSpacing),
-            sliderLeadingConstraint!,
-            sliderTrailingConstraint!,
+            slider.leadingAnchor.constraint(equalTo: minLabelView.trailingAnchor, constant: horizontalSpacing),
+            slider.trailingAnchor.constraint(equalTo: maxLabelView.leadingAnchor, constant: -horizontalSpacing),
         ])
+
+        NSLayoutConstraint.activate(constraints)
+        activeConstraints = constraints
     }
 
     // MARK: - Update Methods
 
-    func updateLabel(_ newLabel: WuiAnyView) {
-        guard newLabel !== labelView else { return }
+    func updateLabel(_ newLabel: WuiAnyView, force: Bool = false) {
+        guard force || newLabel !== labelView else { return }
         labelView.removeFromSuperview()
-
         labelView = newLabel
-        labelView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(labelView)
-
-        #if canImport(UIKit)
-        labelView.setContentCompressionResistancePriority(.required, for: .horizontal)
-        #elseif canImport(AppKit)
-        labelView.setContentCompressionResistancePriority(.required, for: .horizontal)
-        #endif
-
-        NSLayoutConstraint.activate([
-            labelView.topAnchor.constraint(equalTo: topAnchor),
-            labelView.leadingAnchor.constraint(equalTo: leadingAnchor),
-        ])
+        setupConstraints()
     }
 
-    func updateMinLabel(_ newLabel: WuiAnyView) {
-        guard newLabel !== minLabelView else { return }
+    func updateMinLabel(_ newLabel: WuiAnyView, force: Bool = false) {
+        guard force || newLabel !== minLabelView else { return }
         minLabelView.removeFromSuperview()
-
         minLabelView = newLabel
-        minLabelView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(minLabelView)
-
-        #if canImport(UIKit)
-        minLabelView.setContentCompressionResistancePriority(.required, for: .horizontal)
-        #elseif canImport(AppKit)
-        minLabelView.setContentCompressionResistancePriority(.required, for: .horizontal)
-        #endif
-
-        NSLayoutConstraint.activate([
-            minLabelView.topAnchor.constraint(equalTo: labelView.bottomAnchor, constant: verticalSpacing),
-            minLabelView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            minLabelView.centerYAnchor.constraint(equalTo: slider.centerYAnchor),
-        ])
+        setupConstraints()
     }
 
-    func updateMaxLabel(_ newLabel: WuiAnyView) {
-        guard newLabel !== maxLabelView else { return }
+    func updateMaxLabel(_ newLabel: WuiAnyView, force: Bool = false) {
+        guard force || newLabel !== maxLabelView else { return }
         maxLabelView.removeFromSuperview()
-
         maxLabelView = newLabel
-        maxLabelView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(maxLabelView)
-
-        #if canImport(UIKit)
-        maxLabelView.setContentCompressionResistancePriority(.required, for: .horizontal)
-        #elseif canImport(AppKit)
-        maxLabelView.setContentCompressionResistancePriority(.required, for: .horizontal)
-        #endif
-
-        NSLayoutConstraint.activate([
-            maxLabelView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            maxLabelView.centerYAnchor.constraint(equalTo: slider.centerYAnchor),
-        ])
+        setupConstraints()
     }
 
-    func updateBinding(_ newBinding: WuiBinding<Double>) {
-        guard newBinding !== binding else { return }
+    func updateBinding(_ newBinding: WuiBinding<Double>, force: Bool = false) {
+        guard force || newBinding !== binding else { return }
         bindingWatcher = nil
         binding = newBinding
         #if canImport(UIKit)
@@ -252,15 +221,15 @@ final class WuiSlider: PlatformView, WuiComponent {
         startBindingWatcher()
     }
 
-    func updateRange(_ range: WuiRange_f64) {
-        self.range = range
+    func updateRange(_ newRange: WuiRange_f64) {
+        range = newRange
         #if canImport(UIKit)
-        slider.minimumValue = Float(range.start)
-        slider.maximumValue = Float(range.end)
+        slider.minimumValue = Float(newRange.start)
+        slider.maximumValue = Float(newRange.end)
         slider.setValue(Float(clampedValue(binding.value)), animated: false)
         #elseif canImport(AppKit)
-        slider.minValue = range.start
-        slider.maxValue = range.end
+        slider.minValue = newRange.start
+        slider.maxValue = newRange.end
         slider.doubleValue = clampedValue(binding.value)
         #endif
     }

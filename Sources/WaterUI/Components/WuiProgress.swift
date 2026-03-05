@@ -59,8 +59,9 @@ final class WuiProgress: PlatformView, WuiComponent {
         self.style = style
         super.init(frame: .zero)
         configureSubviews()
-        updateAppearance(for: value.value)
-        startWatcher()
+        updateLabel(label, force: true)
+        updateStyle(style)
+        updateValueSource(value, force: true)
     }
 
     @available(*, unavailable)
@@ -206,16 +207,16 @@ final class WuiProgress: PlatformView, WuiComponent {
 
     // MARK: - Update Methods
 
-    func updateLabel(_ newLabel: WuiAnyView) {
-        guard newLabel !== labelView else { return }
+    func updateLabel(_ newLabel: WuiAnyView, force: Bool = false) {
+        guard force || newLabel !== labelView else { return }
         labelView.removeFromSuperview()
-        addSubview(newLabel)
         labelView = newLabel
+        addSubview(newLabel)
         setNeedsLayoutCompat()
     }
 
-    func updateValueSource(_ newValue: WuiComputed<Double>) {
-        guard newValue !== value else { return }
+    func updateValueSource(_ newValue: WuiComputed<Double>, force: Bool = false) {
+        guard force || newValue !== value else { return }
         watcher = nil
         value = newValue
         updateAppearance(for: newValue.value)

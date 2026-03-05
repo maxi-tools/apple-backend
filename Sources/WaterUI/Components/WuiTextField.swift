@@ -110,10 +110,9 @@ final class WuiTextField: PlatformView, WuiComponent {
         super.init(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         configureSubviews()
         configureTextInput()
-        applyPrompt(prompt.value)
-        applyBindingValue(binding.value)
-        startBindingWatcher()
-        startPromptWatcher()
+        updateLabel(label, force: true)
+        updatePrompt(prompt, force: true)
+        updateBinding(binding, force: true)
         startSelectionMenuWatcher()
     }
     #elseif canImport(AppKit)
@@ -134,10 +133,9 @@ final class WuiTextField: PlatformView, WuiComponent {
         super.init(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         configureSubviews()
         configureTextInput()
-        applyPrompt(prompt.value)
-        applyBindingValue(binding.value)
-        startBindingWatcher()
-        startPromptWatcher()
+        updateLabel(label, force: true)
+        updatePrompt(prompt, force: true)
+        updateBinding(binding, force: true)
         startSelectionMenuWatcher()
     }
     #endif
@@ -174,8 +172,8 @@ final class WuiTextField: PlatformView, WuiComponent {
     override var isFlipped: Bool { true }
     #endif
 
-    func updateLabel(_ newLabel: WuiAnyView) {
-        guard newLabel !== labelView else { return }
+    func updateLabel(_ newLabel: WuiAnyView, force: Bool = false) {
+        guard force || newLabel !== labelView else { return }
 
         labelTopConstraint?.isActive = false
         labelLeadingConstraint?.isActive = false
@@ -202,16 +200,16 @@ final class WuiTextField: PlatformView, WuiComponent {
         updateLabelLayout()
     }
 
-    func updateBinding(_ newBinding: WuiBinding<WuiStyledStr>) {
-        guard newBinding !== binding else { return }
+    func updateBinding(_ newBinding: WuiBinding<WuiStyledStr>, force: Bool = false) {
+        guard force || newBinding !== binding else { return }
         bindingWatcher = nil
         binding = newBinding
         applyBindingValue(newBinding.value)
         startBindingWatcher()
     }
 
-    func updatePrompt(_ newPrompt: WuiComputed<WuiStyledStr>) {
-        guard newPrompt !== prompt else { return }
+    func updatePrompt(_ newPrompt: WuiComputed<WuiStyledStr>, force: Bool = false) {
+        guard force || newPrompt !== prompt else { return }
         promptWatcher = nil
         prompt = newPrompt
         applyPrompt(newPrompt.value)

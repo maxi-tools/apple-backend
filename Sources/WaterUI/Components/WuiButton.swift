@@ -59,7 +59,7 @@ final class WuiButton: PlatformView, WuiComponent {
         #endif
         super.init(frame: .zero)
         configureButton()
-        embedLabel(label)
+        updateLabel(label)
     }
 
     @available(*, unavailable)
@@ -106,7 +106,6 @@ final class WuiButton: PlatformView, WuiComponent {
     // MARK: - Update Methods
 
     func updateLabel(_ newLabel: WuiAnyView) {
-        guard labelView !== newLabel else { return }
         labelContainer.subviews.forEach { $0.removeFromSuperview() }
         labelView = newLabel
         embedLabel(newLabel)

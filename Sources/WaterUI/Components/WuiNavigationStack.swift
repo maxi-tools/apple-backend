@@ -300,6 +300,7 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
         rootView.translatesAutoresizingMaskIntoConstraints = true
         addSubview(rootView)
         viewStack.append(NavigationEntry(view: rootView, title: barState?.title))
+        currentIndex = 0
 #endif
 }
 
@@ -362,7 +363,7 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
         applyTitle(viewStack.last?.title, in: window)
 
         // Update back button visibility
-        backButton?.isHidden = viewStack.count <= 1
+        backButton?.isHidden = currentIndex <= 0
     }
 
     @objc private func backButtonTapped() {
@@ -388,6 +389,7 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
         view.alphaValue = (transition == WuiNavigationTransition_None) ? 1 : 0
         addSubview(view)
         viewStack.append(NavigationEntry(view: view, title: title))
+        currentIndex = max(0, viewStack.count - 1)
 
         // Update titlebar state (window title, back button)
         updateTitlebarState()
@@ -408,6 +410,7 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
 
         let currentEntry = viewStack.removeLast()
         let currentView = currentEntry.view
+        currentIndex = max(0, viewStack.count - 1)
 
         // Update titlebar state before animation
         updateTitlebarState()

@@ -157,12 +157,12 @@ final class WuiClipShape: PlatformView, WuiComponent {
                 // NSBezierPath doesn't have addQuadCurve, convert to cubic
                 let current = path.currentPoint
                 let c1 = CGPoint(
-                    x: current.x + 2.0/3.0 * (control.x - current.x),
-                    y: current.y + 2.0/3.0 * (control.y - current.y)
+                    x: current.x + 2.0 / 3.0 * (control.x - current.x),
+                    y: current.y + 2.0 / 3.0 * (control.y - current.y)
                 )
                 let c2 = CGPoint(
-                    x: end.x + 2.0/3.0 * (control.x - end.x),
-                    y: end.y + 2.0/3.0 * (control.y - end.y)
+                    x: end.x + 2.0 / 3.0 * (control.x - end.x),
+                    y: end.y + 2.0 / 3.0 * (control.y - end.y)
                 )
                 path.curve(to: end, controlPoint1: c1, controlPoint2: c2)
 
@@ -259,7 +259,7 @@ final class WuiClipShape: PlatformView, WuiComponent {
 
         var currentAngle = startAngle
 
-        for _ in 0..<segments {
+        for _ in 0 ..< segments {
             let endAngle = currentAngle + segmentAngle
             addEllipticalArcSegment(to: path, cx: cx, cy: cy, rx: rx, ry: ry, startAngle: currentAngle, endAngle: endAngle)
             currentAngle = endAngle
@@ -316,7 +316,7 @@ final class WuiClipShape: PlatformView, WuiComponent {
 
         var currentAngle = startAngle
 
-        for _ in 0..<segments {
+        for _ in 0 ..< segments {
             let endAngle = currentAngle + segmentAngle
             addEllipticalArcSegment(to: path, cx: cx, cy: cy, rx: rx, ry: ry, startAngle: currentAngle, endAngle: endAngle)
             currentAngle = endAngle

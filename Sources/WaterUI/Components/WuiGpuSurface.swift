@@ -332,52 +332,6 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         lock.unlock()
     }
 
-    func clearExternalRendering() {
-        setExternalRendering(false)
-    }
-
-    func renderToTexture(texturePtr: UnsafeMutableRawPointer, width: UInt32, height: UInt32) -> Bool {
-        lock.lock()
-        if !isActive {
-            lock.unlock()
-            return false
-        }
-        let inFlight = renderInFlight
-        lock.unlock()
-
-        if inFlight {
-            waitForIdle()
-        }
-
-        lock.lock()
-        guard isActive, let state = gpuState, width > 0, height > 0 else {
-            lock.unlock()
-            return false
-        }
-        if renderInFlight {
-            lock.unlock()
-            return false
-        }
-        renderInFlight = true
-        lock.unlock()
-
-        let renderBlock = { [weak self] () -> Bool in
-            guard let self else { return false }
-            self.syncInputState()
-            let ok = waterui_gpu_surface_render_to_texture(state, texturePtr, width, height)
-            self.lock.lock()
-            self.renderInFlight = false
-            self.lock.unlock()
-            return ok
-        }
-
-        if WuiSharedRenderQueue.isCurrent {
-            return renderBlock()
-        }
-
-        return WuiSharedRenderQueue.sync { renderBlock() }
-    }
-
     func renderToMetalTexture(texturePtr: UnsafeMutableRawPointer, width: UInt32, height: UInt32) -> Bool {
         lock.lock()
         if !isActive {
@@ -470,151 +424,6 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         }
     }
 }
-
-#if canImport(AppKit)
-/// Shared display link per-window to avoid N× display-link overhead when many continuous
-/// `WuiGpuSurface`s are active in the same window.
-@MainActor
-private final class WuiGpuSurfaceDisplayLinkHub {
-    static let shared = WuiGpuSurfaceDisplayLinkHub()
-
-    @MainActor
-    private final class WindowTicker {
-        private let lock = NSLock()
-        private let surfaces = NSHashTable<WuiGpuSurfaceRenderState>.weakObjects()
-        private weak var window: NSWindow?
-        private var displayLink: CADisplayLink?
-        private var timerFallback: DispatchSourceTimer?
-
-        init(window: NSWindow) {
-            self.window = window
-        }
-
-        func add(_ state: WuiGpuSurfaceRenderState) {
-            lock.lock()
-            surfaces.add(state)
-            lock.unlock()
-            start()
-        }
-
-        func remove(_ state: WuiGpuSurfaceRenderState) -> Bool {
-            lock.lock()
-            surfaces.remove(state)
-            let empty = surfaces.allObjects.isEmpty
-            lock.unlock()
-            if empty {
-                stop()
-            }
-            return empty
-        }
-
-        private func startTimerFallbackIfNeeded() {
-            guard timerFallback == nil else { return }
-            let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
-            timer.schedule(deadline: .now(), repeating: 1.0 / 60.0, leeway: .milliseconds(2))
-            timer.setEventHandler { [weak self] in
-                Task { @MainActor in
-                    self?.tick()
-                }
-            }
-            timerFallback = timer
-            timer.resume()
-        }
-
-        @objc private func displayLinkDidFire(_ sender: CADisplayLink) {
-            tick()
-        }
-
-        private func start() {
-            if displayLink == nil {
-                let link: CADisplayLink?
-                if let window {
-                    link = window.displayLink(target: self, selector: #selector(displayLinkDidFire(_:)))
-                } else if let screen = NSScreen.main {
-                    link = screen.displayLink(target: self, selector: #selector(displayLinkDidFire(_:)))
-                } else {
-                    link = nil
-                }
-
-                if let link {
-                    link.add(to: .main, forMode: .common)
-                    displayLink = link
-                }
-            }
-
-            if let link = displayLink {
-                link.isPaused = false
-                if let timer = timerFallback {
-                    timer.cancel()
-                    timerFallback = nil
-                }
-            } else {
-                startTimerFallbackIfNeeded()
-            }
-        }
-
-        private func stop() {
-            if let link = displayLink {
-                link.invalidate()
-                displayLink = nil
-            }
-            if let timer = timerFallback {
-                timer.cancel()
-                timerFallback = nil
-            }
-        }
-
-        private func tick() {
-            // Avoid holding the lock while calling into render states.
-            lock.lock()
-            let states = surfaces.allObjects
-            lock.unlock()
-
-            for state in states {
-                _ = state.requestRender(force: true) { _ in }
-            }
-        }
-    }
-
-    private let lock = NSLock()
-    private var tickers: [ObjectIdentifier: WindowTicker] = [:]
-
-    func register(_ state: WuiGpuSurfaceRenderState, window: NSWindow) {
-        let windowId = ObjectIdentifier(window)
-
-        let ticker: WindowTicker
-        lock.lock()
-        if let existing = tickers[windowId] {
-            ticker = existing
-        } else {
-            let created = WindowTicker(window: window)
-            tickers[windowId] = created
-            ticker = created
-        }
-        lock.unlock()
-
-        ticker.add(state)
-    }
-
-    func unregister(_ state: WuiGpuSurfaceRenderState, windowId: ObjectIdentifier) {
-        lock.lock()
-        guard let ticker = tickers[windowId] else {
-            lock.unlock()
-            return
-        }
-        lock.unlock()
-
-        let isEmpty = ticker.remove(state)
-        guard isEmpty else { return }
-
-        lock.lock()
-        if tickers[windowId] === ticker {
-            tickers.removeValue(forKey: windowId)
-        }
-        lock.unlock()
-    }
-}
-#endif
 
 /// High-performance GPU rendering surface using wgpu.
 /// Uses CAMetalLayer with CADisplayLink for 120fps rendering.
@@ -1137,7 +946,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
         let bytesPerPixel = (mode == .high) ? 8 : 4
         let modeLabel = (mode == .high) ? "high" : "standard"
         Logger.waterui.info(
-            "[WuiGpuSurface] dynamicRange=\(modeLabel, privacy: .public) pixelFormat=\(metalLayer.pixelFormat.rawValue, privacy: .public) bytesPerPixel=\(bytesPerPixel, privacy: .public)"
+            "[WuiGpuSurface] dynamicRange=\(modeLabel, privacy: .public) pixelFormat=\(self.metalLayer.pixelFormat.rawValue, privacy: .public) bytesPerPixel=\(bytesPerPixel, privacy: .public)"
         )
         configuredDynamicRangeMode = mode
     }
@@ -1303,10 +1112,6 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
 	        }
 	    }
 
-    func clearExternalRendering() {
-        setExternalRendering(false)
-    }
-
     func beginExternalRendering() {
         externalLock.lock()
         externalRenderingCount += 1
@@ -1357,14 +1162,6 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
         if shouldShow {
             setMetalLayerHidden(false)
         }
-    }
-
-    nonisolated func renderToTexture(
-        texturePtr: UnsafeMutableRawPointer,
-        width: UInt32,
-        height: UInt32
-    ) -> Bool {
-        renderState.renderToTexture(texturePtr: texturePtr, width: width, height: height)
     }
 
     nonisolated func renderToMetalTexture(

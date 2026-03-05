@@ -320,7 +320,6 @@ final class WindowManagerImpl {
             return [.titled, .closable, .miniaturizable]
         }
     }
-
 }
 
 /// Window delegate to track state changes and cleanup

@@ -63,7 +63,6 @@ private func wuiSupportsExtendedRange() -> Bool {
 }
 #endif
 
-
 @MainActor
 class WuiColor {
     private var inner: OpaquePointer?

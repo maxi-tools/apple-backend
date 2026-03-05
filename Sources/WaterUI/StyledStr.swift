@@ -8,9 +8,9 @@ import AppKit
 
 @_silgen_name("waterui_font_from_resolved")
 private func wui_font_from_resolved(
-    _ size: Float,
-    _ weight: CWaterUI.WuiFontWeight,
-    _ family: CWaterUI.WuiStr
+    _ _: Float,
+    _ _: CWaterUI.WuiFontWeight,
+    _ _: CWaterUI.WuiStr
 ) -> OpaquePointer?
 
 @MainActor
@@ -402,13 +402,13 @@ private func wuiFontWeight(from font: UIFont) -> CWaterUI.WuiFontWeight {
 
     switch raw {
     case ...(-0.8): return WuiFontWeight_Thin
-    case (-0.8)...(-0.6): return WuiFontWeight_UltraLight
-    case (-0.6)...(-0.4): return WuiFontWeight_Light
-    case (-0.4)...(0.0): return WuiFontWeight_Normal
-    case (0.0)...(0.23): return WuiFontWeight_Medium
-    case (0.23)...(0.3): return WuiFontWeight_SemiBold
-    case (0.3)...(0.5): return WuiFontWeight_Bold
-    case (0.5)...(0.8): return WuiFontWeight_UltraBold
+    case (-0.8) ... (-0.6): return WuiFontWeight_UltraLight
+    case (-0.6) ... (-0.4): return WuiFontWeight_Light
+    case (-0.4) ... (0.0): return WuiFontWeight_Normal
+    case (0.0) ... (0.23): return WuiFontWeight_Medium
+    case (0.23) ... (0.3): return WuiFontWeight_SemiBold
+    case (0.3) ... (0.5): return WuiFontWeight_Bold
+    case (0.5) ... (0.8): return WuiFontWeight_UltraBold
     default: return WuiFontWeight_Black
     }
 }
@@ -445,13 +445,13 @@ private func wuiFontWeight(from font: NSFont) -> CWaterUI.WuiFontWeight {
 
     switch raw {
     case ...(-0.8): return WuiFontWeight_Thin
-    case (-0.8)...(-0.6): return WuiFontWeight_UltraLight
-    case (-0.6)...(-0.4): return WuiFontWeight_Light
-    case (-0.4)...(0.0): return WuiFontWeight_Normal
-    case (0.0)...(0.23): return WuiFontWeight_Medium
-    case (0.23)...(0.3): return WuiFontWeight_SemiBold
-    case (0.3)...(0.5): return WuiFontWeight_Bold
-    case (0.5)...(0.8): return WuiFontWeight_UltraBold
+    case (-0.8) ... (-0.6): return WuiFontWeight_UltraLight
+    case (-0.6) ... (-0.4): return WuiFontWeight_Light
+    case (-0.4) ... (0.0): return WuiFontWeight_Normal
+    case (0.0) ... (0.23): return WuiFontWeight_Medium
+    case (0.23) ... (0.3): return WuiFontWeight_SemiBold
+    case (0.3) ... (0.5): return WuiFontWeight_Bold
+    case (0.5) ... (0.8): return WuiFontWeight_UltraBold
     default: return WuiFontWeight_Black
     }
 }
