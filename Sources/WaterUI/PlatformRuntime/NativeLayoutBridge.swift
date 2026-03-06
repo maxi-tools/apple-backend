@@ -8,7 +8,7 @@ struct NativeLayoutBridge {
     /// The measure closure will be called by Rust during layout.
     func createSubViewProxies<V: WuiComponent>(
         children: [V],
-        measureChild: @escaping (V, WuiProposalSize) -> CGSize
+        measureChild: @escaping (V, WuiProposalSize) -> WuiViewDimensions
     ) -> [SubViewProxy] {
         children.map { child in
             SubViewProxy(
@@ -20,14 +20,22 @@ struct NativeLayoutBridge {
         }
     }
 
+    /// Calculate the full measurement packet for a container.
+    func containerMeasure(
+        layout: WuiLayout,
+        parentProposal: WuiProposalSize,
+        children: [SubViewProxy]
+    ) -> WuiViewDimensions {
+        layout.measure(proposal: parentProposal, children: children)
+    }
+
     /// Calculate the container size using Rust layout engine.
-    /// Rust will call back to measure each child as needed.
     func containerSize(
         layout: WuiLayout,
         parentProposal: WuiProposalSize,
         children: [SubViewProxy]
     ) -> CGSize {
-        layout.sizeThatFits(proposal: parentProposal, children: children)
+        containerMeasure(layout: layout, parentProposal: parentProposal, children: children).cgSize
     }
 
     /// Get placement rects for all children.

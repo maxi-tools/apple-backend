@@ -111,11 +111,17 @@ protocol WuiComponent: PlatformView {
     /// - Parameter proposal: The proposed size from the layout engine
     /// - Returns: The size this view wants to be
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize
+
+    /// Measures the view and returns the full layout packet.
+    func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions
 }
 
 extension WuiComponent {
     var stretchAxis: WuiStretchAxis { .none }
     func layoutPriority() -> Int32 { 0 }
+    func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions {
+        WuiViewDimensions(size: sizeThatFits(proposal))
+    }
 
     /// 128-bit view ID for O(1) registry lookup
     static var viewId: WuiViewId {

@@ -89,11 +89,15 @@ final class WuiContainer: PlatformView, WuiComponent {
     // MARK: - WuiComponent
 
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
+        measure(proposal).cgSize
+    }
+
+    func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions {
         let proxies = bridge.createSubViewProxies(children: childViews) { child, childProposal in
-            child.sizeThatFits(childProposal)
+            child.measure(childProposal)
         }
 
-        return bridge.containerSize(
+        return bridge.containerMeasure(
             layout: wuiLayout,
             parentProposal: proposal,
             children: proxies
@@ -142,7 +146,7 @@ final class WuiContainer: PlatformView, WuiComponent {
             width: Float(bounds.width), height: Float(bounds.height))
 
         let proxies = bridge.createSubViewProxies(children: childViews) { child, childProposal in
-            child.sizeThatFits(childProposal)
+            child.measure(childProposal)
         }
 
         // Measure with bounds-based proposal first - this ensures children know available width

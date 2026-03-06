@@ -148,6 +148,20 @@ extension WuiArray<OpaquePointer> {
     }
 }
 
+extension WuiArray where T == CWaterUI.WuiHorizontalGuide {
+    init(_ inner: CWaterUI.WuiArray_WuiHorizontalGuide) {
+        let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)
+        self.init(c: raw)
+    }
+}
+
+extension WuiArray where T == CWaterUI.WuiVerticalGuide {
+    init(_ inner: CWaterUI.WuiArray_WuiVerticalGuide) {
+        let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)
+        self.init(c: raw)
+    }
+}
+
 extension WuiArray<CWaterUI.WuiStyledChunk> {
     init(_ inner: CWaterUI.WuiArray_WuiStyledChunk) {
         let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)

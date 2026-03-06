@@ -360,6 +360,10 @@ private func registerBuiltinComponentsIfNeeded() {
             inner.sizeThatFits(proposal)
         }
 
+        func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions {
+            inner.measure(proposal)
+        }
+
         /// Returns intrinsic content size for UIKit Auto Layout integration.
         /// This allows WaterUI views to participate in Auto Layout constraints.
         override public var intrinsicContentSize: CGSize {
@@ -555,6 +559,10 @@ private func registerBuiltinComponentsIfNeeded() {
 
         public func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
             inner.sizeThatFits(proposal)
+        }
+
+        func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions {
+            inner.measure(proposal)
         }
 
         /// Returns intrinsic content size for AppKit Auto Layout integration.

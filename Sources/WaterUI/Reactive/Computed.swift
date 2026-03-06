@@ -211,3 +211,19 @@ extension WuiComputed where T == WuiCursorStyle {
         )
     }
 }
+
+extension WuiComputed where T == WuiHorizontalAlignment {
+    convenience init(_ inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: { inner in
+                return waterui_read_computed_horizontal_alignment(inner)
+            },
+            watch: { inner, f in
+                let g = waterui_watch_computed_horizontal_alignment(inner, makeHorizontalAlignmentWatcher(f))
+                return WatcherGuard(g!)
+            },
+            drop: waterui_drop_computed_horizontal_alignment
+        )
+    }
+}

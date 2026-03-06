@@ -287,6 +287,25 @@ func makeCursorStyleWatcher(_ f: @escaping (WuiCursorStyle, WuiWatcherMetadata) 
 }
 
 @MainActor
+func makeHorizontalAlignmentWatcher(_ f: @escaping (WuiHorizontalAlignment, WuiWatcherMetadata) -> Void)
+    -> OpaquePointer
+{
+    let data = wrap(f)
+    let call: @convention(c) (UnsafeMutableRawPointer?, WuiHorizontalAlignment, OpaquePointer?) -> Void =
+        {
+            data, value, metadata in
+            callWrapper(data, value, metadata)
+        }
+    let drop: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
+        dropWrapper($0, WuiHorizontalAlignment.self)
+    }
+    guard let watcher = waterui_new_watcher_horizontal_alignment(data, call, drop) else {
+        fatalError("Failed to create horizontal alignment watcher")
+    }
+    return watcher
+}
+
+@MainActor
 func makeIdWatcher(_ f: @escaping (WuiId, WuiWatcherMetadata) -> Void) -> OpaquePointer {
     let data = wrap(f)
     let call: @convention(c) (UnsafeMutableRawPointer?, WuiId, OpaquePointer?) -> Void = {

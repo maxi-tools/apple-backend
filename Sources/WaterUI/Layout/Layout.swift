@@ -108,6 +108,104 @@ struct WuiRect {
     }
 }
 
+public struct WuiAlignmentKeyId: Hashable {
+    let low: UInt64
+    let high: UInt64
+
+    init(_ raw: CWaterUI.WuiTypeId) {
+        self.low = raw.low
+        self.high = raw.high
+    }
+
+    func toCStruct() -> CWaterUI.WuiTypeId {
+        CWaterUI.WuiTypeId(low: low, high: high)
+    }
+}
+
+public struct WuiHorizontalGuide {
+    var alignment: WuiAlignmentKeyId
+    var value: Float
+
+    init(alignment: WuiAlignmentKeyId, value: Float) {
+        self.alignment = alignment
+        self.value = value
+    }
+
+    init(_ raw: CWaterUI.WuiHorizontalGuide) {
+        self.alignment = WuiAlignmentKeyId(raw.alignment)
+        self.value = raw.value
+    }
+
+    func toCStruct() -> CWaterUI.WuiHorizontalGuide {
+        CWaterUI.WuiHorizontalGuide(alignment: alignment.toCStruct(), value: value)
+    }
+}
+
+public struct WuiVerticalGuide {
+    var alignment: WuiAlignmentKeyId
+    var value: Float
+
+    init(alignment: WuiAlignmentKeyId, value: Float) {
+        self.alignment = alignment
+        self.value = value
+    }
+
+    init(_ raw: CWaterUI.WuiVerticalGuide) {
+        self.alignment = WuiAlignmentKeyId(raw.alignment)
+        self.value = raw.value
+    }
+
+    func toCStruct() -> CWaterUI.WuiVerticalGuide {
+        CWaterUI.WuiVerticalGuide(alignment: alignment.toCStruct(), value: value)
+    }
+}
+
+public struct WuiViewDimensions {
+    var size: WuiSize
+    var horizontalGuides: [WuiHorizontalGuide]
+    var verticalGuides: [WuiVerticalGuide]
+
+    init(
+        size: CGSize,
+        horizontalGuides: [WuiHorizontalGuide] = [],
+        verticalGuides: [WuiVerticalGuide] = []
+    ) {
+        self.size = WuiSize(size)
+        self.horizontalGuides = horizontalGuides
+        self.verticalGuides = verticalGuides
+    }
+
+    init(_ raw: CWaterUI.WuiViewDimensions) {
+        self.size = WuiSize(raw.size)
+        self.horizontalGuides = WuiArray<CWaterUI.WuiHorizontalGuide>(raw.horizontal_guides)
+            .toArray()
+            .map(WuiHorizontalGuide.init)
+        self.verticalGuides = WuiArray<CWaterUI.WuiVerticalGuide>(raw.vertical_guides)
+            .toArray()
+            .map(WuiVerticalGuide.init)
+    }
+
+    var cgSize: CGSize {
+        size.cgSize
+    }
+
+    func toCStruct() -> CWaterUI.WuiViewDimensions {
+        let horizontalArray = WuiArray(array: horizontalGuides.map { $0.toCStruct() })
+        let verticalArray = WuiArray(array: verticalGuides.map { $0.toCStruct() })
+        return CWaterUI.WuiViewDimensions(
+            size: size.toCStruct(),
+            horizontal_guides: unsafeBitCast(
+                horizontalArray.intoInner(),
+                to: CWaterUI.WuiArray_WuiHorizontalGuide.self
+            ),
+            vertical_guides: unsafeBitCast(
+                verticalArray.intoInner(),
+                to: CWaterUI.WuiArray_WuiVerticalGuide.self
+            )
+        )
+    }
+}
+
 // MARK: - Layout Engine
 
 @MainActor
@@ -122,20 +220,26 @@ final class WuiLayout {
         waterui_drop_layout(inner)
     }
 
+    private func subviewArray(_ children: [SubViewProxy]) -> CWaterUI.WuiArray_WuiSubView {
+        let subviews = children.map { $0.toWuiSubView() }
+        let array = WuiArray(array: subviews)
+        return unsafeBitCast(array.inner.intoInner(), to: CWaterUI.WuiArray_WuiSubView.self)
+    }
+
+    func measure(
+        proposal: WuiProposalSize,
+        children: [SubViewProxy]
+    ) -> WuiViewDimensions {
+        let dimensions = waterui_layout_measure(inner, proposal.toCStruct(), subviewArray(children))
+        return WuiViewDimensions(dimensions)
+    }
+
     /// Calculate the size this layout wants given a proposal.
-    /// The layout will call the measure closure multiple times with different proposals.
     func sizeThatFits(
         proposal: WuiProposalSize,
         children: [SubViewProxy]
     ) -> CGSize {
-        let subviews = children.map { $0.toWuiSubView() }
-        let array = WuiArray(array: subviews)
-        let typedArray = unsafeBitCast(
-            array.inner.intoInner(),
-            to: CWaterUI.WuiArray_WuiSubView.self
-        )
-        let size = waterui_layout_size_that_fits(inner, proposal.toCStruct(), typedArray)
-        return WuiSize(size).cgSize
+        measure(proposal: proposal, children: children).cgSize
     }
 
     /// Place children within the given bounds.
@@ -144,14 +248,8 @@ final class WuiLayout {
         bounds: CGRect,
         children: [SubViewProxy]
     ) -> [CGRect] {
-        let subviews = children.map { $0.toWuiSubView() }
-        let array = WuiArray(array: subviews)
-        let typedArray = unsafeBitCast(
-            array.inner.intoInner(),
-            to: CWaterUI.WuiArray_WuiSubView.self
-        )
         let boundsRaw = WuiRect(bounds).toCStruct()
-        let rects = waterui_layout_place(inner, boundsRaw, typedArray)
+        let rects = waterui_layout_place(inner, boundsRaw, subviewArray(children))
         let rawArray = unsafeBitCast(rects, to: CWaterUI.WuiArray.self)
         let bridged = WuiArray<CWaterUI.WuiRect>(c: rawArray)
         return bridged.toArray().map { WuiRect($0).cgRect }
@@ -164,8 +262,8 @@ final class WuiLayout {
 /// This mirrors Rust's SubView trait.
 @MainActor
 final class SubViewProxy {
-    /// Closure that measures the child given a proposal
-    let measure: (WuiProposalSize) -> CGSize
+    /// Closure that measures the child given a proposal.
+    let measure: (WuiProposalSize) -> WuiViewDimensions
     /// Which axis this view stretches to fill available space
     let stretchAxis: WuiStretchAxis
     /// Layout priority (higher = measured first)
@@ -174,7 +272,7 @@ final class SubViewProxy {
     init(
         stretchAxis: WuiStretchAxis = .none,
         priority: Int32 = 0,
-        measure: @escaping (WuiProposalSize) -> CGSize
+        measure: @escaping (WuiProposalSize) -> WuiViewDimensions
     ) {
         self.measure = measure
         self.stretchAxis = stretchAxis
@@ -182,18 +280,16 @@ final class SubViewProxy {
     }
 
     func toWuiSubView() -> CWaterUI.WuiSubView {
-        // Create a retained reference to self for the callback
         let context = Unmanaged.passRetained(self).toOpaque()
 
         let vtable = CWaterUI.WuiSubViewVTable(
             measure: { contextPtr, proposal in
                 guard let contextPtr = contextPtr else {
-                    return CWaterUI.WuiSize(width: 0, height: 0)
+                    return WuiViewDimensions(size: .zero).toCStruct()
                 }
                 let proxy = Unmanaged<SubViewProxy>.fromOpaque(contextPtr).takeUnretainedValue()
                 let swiftProposal = WuiProposalSize(proposal)
-                let size = proxy.measure(swiftProposal)
-                return CWaterUI.WuiSize(width: Float(size.width), height: Float(size.height))
+                return proxy.measure(swiftProposal).toCStruct()
             },
             drop: { contextPtr in
                 guard let contextPtr = contextPtr else { return }
@@ -215,16 +311,16 @@ final class SubViewProxy {
 extension CGFloat {
     /// Checks if the value is a valid, finite number suitable for layout calculations.
     var isValidForLayout: Bool {
-        return !self.isNaN && !self.isInfinite
+        !isNaN && !isInfinite
     }
 }
 
 extension CGRect {
     /// Checks if the rect's origin and size are composed of valid, finite numbers.
     var isValidForLayout: Bool {
-        return origin.x.isValidForLayout &&
-               origin.y.isValidForLayout &&
-               size.width.isValidForLayout &&
-               size.height.isValidForLayout
+        origin.x.isValidForLayout &&
+            origin.y.isValidForLayout &&
+            size.width.isValidForLayout &&
+            size.height.isValidForLayout
     }
 }

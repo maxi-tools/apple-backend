@@ -7,6 +7,7 @@
 // Does not expand to fill available space.
 
 import CWaterUI
+import CoreText
 
 #if canImport(UIKit)
 import UIKit
@@ -46,7 +47,6 @@ class WuiTextBase: PlatformView {
     private func configureTextView() {
         #if canImport(UIKit)
         label.translatesAutoresizingMaskIntoConstraints = false
-        // Match system dynamic label color (fixes dark mode defaults).
         label.textColor = .label
         label.numberOfLines = 0
         label.lineBreakMode = .byWordWrapping
@@ -77,52 +77,94 @@ class WuiTextBase: PlatformView {
         #endif
     }
 
-    // MARK: - Size Calculation
+    // MARK: - Measurement
+
+    private func currentAttributedText() -> NSAttributedString {
+        #if canImport(UIKit)
+        return label.attributedText ?? NSAttributedString(string: label.text ?? "")
+        #elseif canImport(AppKit)
+        return textField.attributedStringValue
+        #endif
+    }
+
+    private func textMeasurement(_ proposal: WuiProposalSize) -> (
+        size: CGSize,
+        firstBaseline: CGFloat?,
+        lastBaseline: CGFloat?
+    ) {
+        let attributedText = currentAttributedText()
+        guard attributedText.length > 0 else {
+            return (.zero, nil, nil)
+        }
+
+        let proposedWidth = proposal.width.map(CGFloat.init)
+        let proposedHeight = proposal.height.map(CGFloat.init)
+        let maxWidth = proposedWidth ?? CGFloat.greatestFiniteMagnitude
+        let maxHeight = proposedHeight ?? CGFloat.greatestFiniteMagnitude
+        let constraintWidth = proposedWidth ?? CGFloat.greatestFiniteMagnitude
+        let constraintHeight = proposedHeight ?? CGFloat.greatestFiniteMagnitude
+        let framesetter = CTFramesetterCreateWithAttributedString(attributedText as CFAttributedString)
+        var fitRange = CFRange()
+        let suggested = CTFramesetterSuggestFrameSizeWithConstraints(
+            framesetter,
+            CFRange(location: 0, length: 0),
+            nil,
+            CGSize(width: constraintWidth, height: constraintHeight),
+            &fitRange
+        )
+        let width = ceil(min(suggested.width, maxWidth))
+        let height = ceil(min(suggested.height, maxHeight))
+        let size = CGSize(width: max(width, 0.0), height: max(height, 0.0))
+        let frameWidth = max(size.width, 1.0)
+        let frameHeight = max(size.height, 1.0)
+        let path = CGPath(rect: CGRect(x: 0.0, y: 0.0, width: frameWidth, height: frameHeight), transform: nil)
+        let frame = CTFramesetterCreateFrame(
+            framesetter,
+            CFRange(location: 0, length: fitRange.length),
+            path,
+            nil
+        )
+        let lines = CTFrameGetLines(frame) as! [CTLine]
+        guard !lines.isEmpty else {
+            return (size, nil, nil)
+        }
+        var origins = Array(repeating: CGPoint.zero, count: lines.count)
+        CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+        let firstBaseline = frameHeight - origins[0].y
+        let lastBaseline = frameHeight - origins[lines.count - 1].y
+        return (size, firstBaseline, lastBaseline)
+    }
 
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
-        #if canImport(UIKit)
-        let maxWidth = proposal.width.map(CGFloat.init) ?? CGFloat.greatestFiniteMagnitude
-        let maxHeight = proposal.height.map(CGFloat.init) ?? CGFloat.greatestFiniteMagnitude
-        let measured = label.sizeThatFits(CGSize(width: maxWidth, height: maxHeight))
-        return CGSize(
-            width: ceil(min(measured.width, maxWidth)),
-            height: ceil(min(measured.height, maxHeight))
-        )
-        #elseif canImport(AppKit)
-        guard let cell = textField.cell else {
-            return .zero
+        textMeasurement(proposal).size
+    }
+
+    func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions {
+        let measurement = textMeasurement(proposal)
+        var verticalGuides: [WuiVerticalGuide] = []
+        if let firstBaseline = measurement.firstBaseline {
+            verticalGuides.append(
+                WuiVerticalGuide(
+                    alignment: WuiAlignmentKeyId(waterui_vertical_alignment_first_baseline_id()),
+                    value: Float(firstBaseline)
+                )
+            )
         }
-
-        let attributedText = textField.attributedStringValue
-        guard attributedText.length > 0 else {
-            return .zero
+        if let lastBaseline = measurement.lastBaseline {
+            verticalGuides.append(
+                WuiVerticalGuide(
+                    alignment: WuiAlignmentKeyId(waterui_vertical_alignment_last_baseline_id()),
+                    value: Float(lastBaseline)
+                )
+            )
         }
-
-        let maxHeight = proposal.height.map(CGFloat.init) ?? CGFloat.greatestFiniteMagnitude
-
-        let intrinsic = cell.cellSize(forBounds: CGRect(
-            origin: .zero,
-            size: CGSize(width: CGFloat.greatestFiniteMagnitude, height: maxHeight)
-        ))
-
-        if let proposedWidth = proposal.width {
-            let maxWidth = CGFloat(proposedWidth)
-            if intrinsic.width > maxWidth {
-                let constrained = cell.cellSize(forBounds: CGRect(
-                    origin: .zero,
-                    size: CGSize(width: maxWidth, height: maxHeight)
-                ))
-                return CGSize(width: ceil(maxWidth), height: ceil(min(constrained.height, maxHeight)))
-            }
-        }
-
-        return CGSize(width: ceil(intrinsic.width), height: ceil(min(intrinsic.height, maxHeight)))
-        #endif
+        return WuiViewDimensions(size: measurement.size, verticalGuides: verticalGuides)
     }
 
     #if canImport(AppKit)
     override var isFlipped: Bool { true }
     #endif
+
 
     // MARK: - Text Updates
 
@@ -131,6 +173,31 @@ class WuiTextBase: PlatformView {
         label.attributedText = attributed
         #elseif canImport(AppKit)
         textField.attributedStringValue = NSAttributedString(attributedString: attributed)
+        #endif
+        invalidateLayout()
+    }
+
+    func setParagraphAlignment(_ alignment: WuiHorizontalAlignment) {
+        #if canImport(UIKit)
+        let direction = UIView.userInterfaceLayoutDirection(for: semanticContentAttribute)
+        switch alignment {
+        case WuiHorizontalAlignment_Leading:
+            label.textAlignment = .natural
+        case WuiHorizontalAlignment_Trailing:
+            label.textAlignment = direction == .rightToLeft ? .left : .right
+        default:
+            label.textAlignment = .center
+        }
+        #elseif canImport(AppKit)
+        let direction = userInterfaceLayoutDirection
+        switch alignment {
+        case WuiHorizontalAlignment_Leading:
+            textField.alignment = .natural
+        case WuiHorizontalAlignment_Trailing:
+            textField.alignment = direction == .rightToLeft ? .left : .right
+        default:
+            textField.alignment = .center
+        }
         #endif
         invalidateLayout()
     }
