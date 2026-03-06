@@ -282,7 +282,10 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
         // Emit ended event
         let event = CWaterUI.WuiVideoEvent(
             event_type: CWaterUI.WuiVideoEventType_Ended,
-            error_message: WuiStr(string: "").intoInner()
+            error_message: WuiStr(string: "").intoInner(),
+            buffered_ms: 0,
+            av_drift_ms: 0,
+            dropped_video_frames: 0
         )
         onEvent.call(onEvent.data, event)
     }
@@ -304,7 +307,10 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
             // Emit error event
             let event = CWaterUI.WuiVideoEvent(
                 event_type: CWaterUI.WuiVideoEventType_Error,
-                error_message: WuiStr(string: "Invalid video URL").intoInner()
+                error_message: WuiStr(string: "Invalid video URL").intoInner(),
+                buffered_ms: 0,
+                av_drift_ms: 0,
+                dropped_video_frames: 0
             )
             onEvent.call(onEvent.data, event)
             return
@@ -333,14 +339,20 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
                     // Emit error event
                     let event = CWaterUI.WuiVideoEvent(
                         event_type: CWaterUI.WuiVideoEventType_Error,
-                        error_message: WuiStr(string: errorMessage).intoInner()
+                        error_message: WuiStr(string: errorMessage).intoInner(),
+                        buffered_ms: 0,
+                        av_drift_ms: 0,
+                        dropped_video_frames: 0
                     )
                     self.onEvent.call(self.onEvent.data, event)
                 case .readyToPlay:
                     // Emit ready event
                     let event = CWaterUI.WuiVideoEvent(
                         event_type: CWaterUI.WuiVideoEventType_ReadyToPlay,
-                        error_message: WuiStr(string: "").intoInner()
+                        error_message: WuiStr(string: "").intoInner(),
+                        buffered_ms: 0,
+                        av_drift_ms: 0,
+                        dropped_video_frames: 0
                     )
                     self.onEvent.call(self.onEvent.data, event)
                 case .unknown:
@@ -359,7 +371,10 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
                     self.isBuffering = true
                     let event = CWaterUI.WuiVideoEvent(
                         event_type: CWaterUI.WuiVideoEventType_Buffering,
-                        error_message: WuiStr(string: "").intoInner()
+                        error_message: WuiStr(string: "").intoInner(),
+                        buffered_ms: 0,
+                        av_drift_ms: 0,
+                        dropped_video_frames: 0
                     )
                     self.onEvent.call(self.onEvent.data, event)
                 }
@@ -374,7 +389,10 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
                     self.isBuffering = false
                     let event = CWaterUI.WuiVideoEvent(
                         event_type: CWaterUI.WuiVideoEventType_BufferingEnded,
-                        error_message: WuiStr(string: "").intoInner()
+                        error_message: WuiStr(string: "").intoInner(),
+                        buffered_ms: 0,
+                        av_drift_ms: 0,
+                        dropped_video_frames: 0
                     )
                     self.onEvent.call(self.onEvent.data, event)
                 }
