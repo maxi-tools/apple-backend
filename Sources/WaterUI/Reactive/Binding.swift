@@ -213,6 +213,21 @@ extension WuiBinding where T == CWaterUI.WuiDate {
     }
 }
 
+extension WuiBinding where T == CWaterUI.WuiDateTime {
+    convenience init(_ inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: waterui_read_binding_date_time,
+            watch: { inner, f in
+                let g = waterui_watch_binding_date_time(inner, makeDateTimeWatcher(f))
+                return WatcherGuard(g!)
+            },
+            set: waterui_set_binding_date_time,
+            drop: waterui_drop_binding_date_time
+        )
+    }
+}
+
 // WuiColor is an opaque pointer type
 extension WuiBinding where T == OpaquePointer {
     /// Creates a binding for Color (opaque WuiColor pointer)

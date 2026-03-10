@@ -268,6 +268,28 @@ func makeColorSchemeWatcher(_ f: @escaping (WuiColorScheme, WuiWatcherMetadata) 
 }
 
 @MainActor
+func makeHorizontalAlignmentWatcher(_ f: @escaping (WuiHorizontalAlignment, WuiWatcherMetadata) -> Void)
+    -> OpaquePointer
+{
+    let data = wrap(f)
+    let call: @convention(c) (
+        UnsafeMutableRawPointer?,
+        WuiHorizontalAlignment,
+        OpaquePointer?
+    ) -> Void = {
+        data, value, metadata in
+        callWrapper(data, value, metadata)
+    }
+    let drop: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
+        dropWrapper($0, WuiHorizontalAlignment.self)
+    }
+    guard let watcher = waterui_new_watcher_horizontal_alignment(data, call, drop) else {
+        fatalError("Failed to create horizontal alignment watcher")
+    }
+    return watcher
+}
+
+@MainActor
 func makeCursorStyleWatcher(_ f: @escaping (WuiCursorStyle, WuiWatcherMetadata) -> Void)
     -> OpaquePointer
 {
@@ -282,25 +304,6 @@ func makeCursorStyleWatcher(_ f: @escaping (WuiCursorStyle, WuiWatcherMetadata) 
     }
     guard let watcher = waterui_new_watcher_cursor_style(data, call, drop) else {
         fatalError("Failed to create cursor style watcher")
-    }
-    return watcher
-}
-
-@MainActor
-func makeHorizontalAlignmentWatcher(_ f: @escaping (WuiHorizontalAlignment, WuiWatcherMetadata) -> Void)
-    -> OpaquePointer
-{
-    let data = wrap(f)
-    let call: @convention(c) (UnsafeMutableRawPointer?, WuiHorizontalAlignment, OpaquePointer?) -> Void =
-        {
-            data, value, metadata in
-            callWrapper(data, value, metadata)
-        }
-    let drop: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
-        dropWrapper($0, WuiHorizontalAlignment.self)
-    }
-    guard let watcher = waterui_new_watcher_horizontal_alignment(data, call, drop) else {
-        fatalError("Failed to create horizontal alignment watcher")
     }
     return watcher
 }
@@ -333,6 +336,22 @@ func makeDateWatcher(_ f: @escaping (CWaterUI.WuiDate, WuiWatcherMetadata) -> Vo
     }
     guard let watcher = waterui_new_watcher_date(data, call, drop) else {
         fatalError("Failed to create date watcher")
+    }
+    return watcher
+}
+
+@MainActor
+func makeDateTimeWatcher(_ f: @escaping (CWaterUI.WuiDateTime, WuiWatcherMetadata) -> Void) -> OpaquePointer {
+    let data = wrap(f)
+    let call: @convention(c) (UnsafeMutableRawPointer?, CWaterUI.WuiDateTime, OpaquePointer?) -> Void = {
+        data, value, metadata in
+        callWrapper(data, value, metadata)
+    }
+    let drop: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
+        dropWrapper($0, CWaterUI.WuiDateTime.self)
+    }
+    guard let watcher = waterui_new_watcher_date_time(data, call, drop) else {
+        fatalError("Failed to create date-time watcher")
     }
     return watcher
 }
