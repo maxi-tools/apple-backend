@@ -1,4 +1,5 @@
 import CWaterUI
+import Foundation
 import OSLog
 import SwiftUI
 
@@ -393,6 +394,92 @@ final class ReactiveFontSignal {
     }
 }
 
+private struct WaterUIThemeConfiguration: Decodable {
+    let background: String?
+    let surface: String?
+    let surfaceVariant: String?
+    let border: String?
+    let foreground: String?
+    let mutedForeground: String?
+    let accent: String?
+    let accentForeground: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case background
+        case surface
+        case surfaceVariant = "surface_variant"
+        case border
+        case foreground
+        case mutedForeground = "muted_foreground"
+        case accent
+        case accentForeground = "accent_foreground"
+    }
+
+    static func load() -> WaterUIThemeConfiguration? {
+        guard let url = Bundle.main.url(forResource: "WaterUITheme", withExtension: "json") else {
+            return nil
+        }
+        do {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode(WaterUIThemeConfiguration.self, from: data)
+        } catch {
+            fatalError("WaterUI: failed to decode WaterUITheme.json: \(error)")
+        }
+    }
+
+    #if canImport(UIKit)
+        var backgroundColor: UIColor? { background.flatMap(Self.parseUIColor) }
+        var surfaceColor: UIColor? { surface.flatMap(Self.parseUIColor) }
+        var surfaceVariantColor: UIColor? { surfaceVariant.flatMap(Self.parseUIColor) }
+        var borderColor: UIColor? { border.flatMap(Self.parseUIColor) }
+        var foregroundColor: UIColor? { foreground.flatMap(Self.parseUIColor) }
+        var mutedForegroundColor: UIColor? { mutedForeground.flatMap(Self.parseUIColor) }
+        var accentColor: UIColor? { accent.flatMap(Self.parseUIColor) }
+        var accentForegroundColor: UIColor? { accentForeground.flatMap(Self.parseUIColor) }
+
+        private static func parseUIColor(_ value: String) -> UIColor? {
+            guard let (red, green, blue) = parseHex(value) else { return nil }
+            return UIColor(
+                red: CGFloat(red) / 255.0,
+                green: CGFloat(green) / 255.0,
+                blue: CGFloat(blue) / 255.0,
+                alpha: 1.0
+            )
+        }
+    #elseif canImport(AppKit)
+        var backgroundColor: NSColor? { background.flatMap(Self.parseNSColor) }
+        var surfaceColor: NSColor? { surface.flatMap(Self.parseNSColor) }
+        var surfaceVariantColor: NSColor? { surfaceVariant.flatMap(Self.parseNSColor) }
+        var borderColor: NSColor? { border.flatMap(Self.parseNSColor) }
+        var foregroundColor: NSColor? { foreground.flatMap(Self.parseNSColor) }
+        var mutedForegroundColor: NSColor? { mutedForeground.flatMap(Self.parseNSColor) }
+        var accentColor: NSColor? { accent.flatMap(Self.parseNSColor) }
+        var accentForegroundColor: NSColor? { accentForeground.flatMap(Self.parseNSColor) }
+
+        private static func parseNSColor(_ value: String) -> NSColor? {
+            guard let (red, green, blue) = parseHex(value) else { return nil }
+            return NSColor(
+                calibratedRed: CGFloat(red) / 255.0,
+                green: CGFloat(green) / 255.0,
+                blue: CGFloat(blue) / 255.0,
+                alpha: 1.0
+            )
+        }
+    #endif
+
+    private static func parseHex(_ value: String) -> (UInt8, UInt8, UInt8)? {
+        let raw = value.hasPrefix("#") ? String(value.dropFirst()) : value
+        guard raw.count == 6, let rgb = UInt32(raw, radix: 16) else {
+            return nil
+        }
+        return (
+            UInt8((rgb & 0xFF00_00) >> 16),
+            UInt8((rgb & 0x00FF_00) >> 8),
+            UInt8(rgb & 0x0000_FF)
+        )
+    }
+}
+
 // MARK: - Theme Bridge
 
 /// Observes system appearance changes and updates theme reactively.
@@ -417,6 +504,7 @@ public final class ThemeBridge {
 
     // Track if initial installation is done
     private var installed = false
+    private let configuredTheme = WaterUIThemeConfiguration.load()
 
     public enum ColorScheme {
         case light
@@ -444,41 +532,54 @@ public final class ThemeBridge {
 
         // Create reactive color signals
         #if canImport(UIKit)
+            let theme = configuredTheme
             backgroundSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_Background, color: UIColor.systemBackground)
+                env: env, slot: WuiColorSlot_Background,
+                color: theme?.backgroundColor ?? UIColor.systemBackground)
             surfaceSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_Surface, color: UIColor.secondarySystemBackground)
+                env: env, slot: WuiColorSlot_Surface,
+                color: theme?.surfaceColor ?? UIColor.secondarySystemBackground)
             surfaceVariantSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_SurfaceVariant, color: UIColor.tertiarySystemBackground
+                env: env, slot: WuiColorSlot_SurfaceVariant,
+                color: theme?.surfaceVariantColor ?? UIColor.tertiarySystemBackground
             )
             borderSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_Border, color: UIColor.separator)
+                env: env, slot: WuiColorSlot_Border, color: theme?.borderColor ?? UIColor.separator)
             foregroundSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_Foreground, color: UIColor.label)
+                env: env, slot: WuiColorSlot_Foreground, color: theme?.foregroundColor ?? UIColor.label)
             mutedForegroundSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_MutedForeground, color: UIColor.secondaryLabel)
+                env: env, slot: WuiColorSlot_MutedForeground,
+                color: theme?.mutedForegroundColor ?? UIColor.secondaryLabel)
             accentSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_Accent, color: UIColor.tintColor)
+                env: env, slot: WuiColorSlot_Accent, color: theme?.accentColor ?? UIColor.tintColor)
             accentForegroundSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_AccentForeground, color: UIColor.white)
+                env: env, slot: WuiColorSlot_AccentForeground,
+                color: theme?.accentForegroundColor ?? UIColor.white)
         #elseif canImport(AppKit)
+            let theme = configuredTheme
             backgroundSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_Background, color: NSColor.windowBackgroundColor)
+                env: env, slot: WuiColorSlot_Background,
+                color: theme?.backgroundColor ?? NSColor.windowBackgroundColor)
             surfaceSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_Surface, color: NSColor.controlBackgroundColor)
+                env: env, slot: WuiColorSlot_Surface,
+                color: theme?.surfaceColor ?? NSColor.controlBackgroundColor)
             surfaceVariantSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_SurfaceVariant, color: NSColor.underPageBackgroundColor
+                env: env, slot: WuiColorSlot_SurfaceVariant,
+                color: theme?.surfaceVariantColor ?? NSColor.underPageBackgroundColor
             )
             borderSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_Border, color: NSColor.separatorColor)
+                env: env, slot: WuiColorSlot_Border, color: theme?.borderColor ?? NSColor.separatorColor)
             foregroundSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_Foreground, color: NSColor.labelColor)
+                env: env, slot: WuiColorSlot_Foreground, color: theme?.foregroundColor ?? NSColor.labelColor)
             mutedForegroundSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_MutedForeground, color: NSColor.secondaryLabelColor)
+                env: env, slot: WuiColorSlot_MutedForeground,
+                color: theme?.mutedForegroundColor ?? NSColor.secondaryLabelColor)
             accentSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_Accent, color: NSColor.controlAccentColor)
+                env: env, slot: WuiColorSlot_Accent,
+                color: theme?.accentColor ?? NSColor.controlAccentColor)
             accentForegroundSignal = createAndInstallColorSignal(
-                env: env, slot: WuiColorSlot_AccentForeground, color: NSColor.white)
+                env: env, slot: WuiColorSlot_AccentForeground,
+                color: theme?.accentForegroundColor ?? NSColor.white)
         #endif
 
         // Install fonts (constant - don't change with appearance)
@@ -498,23 +599,25 @@ public final class ThemeBridge {
         // Update color signals with new system colors
         // The reactive system will automatically propagate these changes
         #if canImport(UIKit)
-            backgroundSignal?.setValue(UIColor.systemBackground)
-            surfaceSignal?.setValue(UIColor.secondarySystemBackground)
-            surfaceVariantSignal?.setValue(UIColor.tertiarySystemBackground)
-            borderSignal?.setValue(UIColor.separator)
-            foregroundSignal?.setValue(UIColor.label)
-            mutedForegroundSignal?.setValue(UIColor.secondaryLabel)
-            accentSignal?.setValue(UIColor.tintColor)
-            accentForegroundSignal?.setValue(UIColor.white)
+            let theme = configuredTheme
+            backgroundSignal?.setValue(theme?.backgroundColor ?? UIColor.systemBackground)
+            surfaceSignal?.setValue(theme?.surfaceColor ?? UIColor.secondarySystemBackground)
+            surfaceVariantSignal?.setValue(theme?.surfaceVariantColor ?? UIColor.tertiarySystemBackground)
+            borderSignal?.setValue(theme?.borderColor ?? UIColor.separator)
+            foregroundSignal?.setValue(theme?.foregroundColor ?? UIColor.label)
+            mutedForegroundSignal?.setValue(theme?.mutedForegroundColor ?? UIColor.secondaryLabel)
+            accentSignal?.setValue(theme?.accentColor ?? UIColor.tintColor)
+            accentForegroundSignal?.setValue(theme?.accentForegroundColor ?? UIColor.white)
         #elseif canImport(AppKit)
-            backgroundSignal?.setValue(NSColor.windowBackgroundColor)
-            surfaceSignal?.setValue(NSColor.controlBackgroundColor)
-            surfaceVariantSignal?.setValue(NSColor.underPageBackgroundColor)
-            borderSignal?.setValue(NSColor.separatorColor)
-            foregroundSignal?.setValue(NSColor.labelColor)
-            mutedForegroundSignal?.setValue(NSColor.secondaryLabelColor)
-            accentSignal?.setValue(NSColor.controlAccentColor)
-            accentForegroundSignal?.setValue(NSColor.white)
+            let theme = configuredTheme
+            backgroundSignal?.setValue(theme?.backgroundColor ?? NSColor.windowBackgroundColor)
+            surfaceSignal?.setValue(theme?.surfaceColor ?? NSColor.controlBackgroundColor)
+            surfaceVariantSignal?.setValue(theme?.surfaceVariantColor ?? NSColor.underPageBackgroundColor)
+            borderSignal?.setValue(theme?.borderColor ?? NSColor.separatorColor)
+            foregroundSignal?.setValue(theme?.foregroundColor ?? NSColor.labelColor)
+            mutedForegroundSignal?.setValue(theme?.mutedForegroundColor ?? NSColor.secondaryLabelColor)
+            accentSignal?.setValue(theme?.accentColor ?? NSColor.controlAccentColor)
+            accentForegroundSignal?.setValue(theme?.accentForegroundColor ?? NSColor.white)
         #endif
     }
 
