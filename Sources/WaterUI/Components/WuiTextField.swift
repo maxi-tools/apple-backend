@@ -33,8 +33,10 @@ final class WuiTextField: PlatformView, WuiComponent {
     #if canImport(UIKit)
     private let textView = UITextView()
     private let placeholderLabel = UILabel()
+    private lazy var focusTarget = WuiUIKitFocusTarget(control: textView)
     #elseif canImport(AppKit)
     private let textField = NSTextField()
+    private lazy var focusTarget = WuiAppKitTextFieldFocusTarget(control: textField)
     #endif
 
     private var bindingWatcher: WatcherGuard?
@@ -275,6 +277,7 @@ final class WuiTextField: PlatformView, WuiComponent {
         #if canImport(UIKit)
         textView.keyboardType = keyboard.uiKeyboardType
         textView.delegate = self
+        textView.installWuiFocusTarget(focusTarget)
         textView.isScrollEnabled = false
         textView.textContainer.maximumNumberOfLines = 1
         textView.textContainer.lineBreakMode = .byTruncatingTail
@@ -301,6 +304,7 @@ final class WuiTextField: PlatformView, WuiComponent {
         textField.isEditable = true
         textField.isSelectable = true
         textField.delegate = self
+        textField.installWuiFocusTarget(focusTarget)
         #endif
     }
 
@@ -408,6 +412,14 @@ private final class SelectionMenuItem {
 
 #if canImport(UIKit)
 extension WuiTextField: UITextViewDelegate {
+    func textViewDidBeginEditing(_ textView: UITextView) {
+        focusTarget.emitPlatformFocusChange(true)
+    }
+
+    func textViewDidEndEditing(_ textView: UITextView) {
+        focusTarget.emitPlatformFocusChange(false)
+    }
+
     func textViewDidChange(_ textView: UITextView) {
         guard !isSyncingFromBinding else { return }
         if textView.markedTextRange != nil {
@@ -453,9 +465,17 @@ extension WuiTextField: UITextViewDelegate {
 
 #if canImport(AppKit)
 extension WuiTextField: NSTextFieldDelegate {
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        focusTarget.emitPlatformFocusChange(true)
+    }
+
     func controlTextDidChange(_ obj: Notification) {
         guard !isSyncingFromBinding else { return }
         binding.set(WuiStyledStr.fromAttributedString(textField.attributedStringValue))
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        focusTarget.emitPlatformFocusChange(false)
     }
 }
 #endif

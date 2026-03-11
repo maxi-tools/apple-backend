@@ -27,8 +27,10 @@ final class WuiSecureField: PlatformView, WuiComponent {
 
     #if canImport(UIKit)
     private let textField = UITextField()
+    private lazy var focusTarget = WuiUIKitFocusTarget(control: textField)
     #elseif canImport(AppKit)
     private let textField = NSSecureTextField()
+    private lazy var focusTarget = WuiAppKitTextFieldFocusTarget(control: textField)
     #endif
     private var isSyncingFromBinding = false
 
@@ -159,31 +161,51 @@ final class WuiSecureField: PlatformView, WuiComponent {
         textField.textContentType = .password
         textField.autocorrectionType = .no
         textField.autocapitalizationType = .none
+        textField.installWuiFocusTarget(focusTarget)
+        textField.addTarget(self, action: #selector(editingDidBegin), for: .editingDidBegin)
         textField.addTarget(self, action: #selector(valueChanged), for: .editingChanged)
+        textField.addTarget(self, action: #selector(editingDidEnd), for: .editingDidEnd)
         #elseif canImport(AppKit)
         textField.isBordered = true
         textField.bezelStyle = .roundedBezel
         textField.isEditable = true
         textField.isSelectable = true
         textField.delegate = self
+        textField.installWuiFocusTarget(focusTarget)
         #endif
     }
 
     #if canImport(UIKit)
+    @objc private func editingDidBegin() {
+        focusTarget.emitPlatformFocusChange(true)
+    }
+
     @objc private func valueChanged() {
         guard !isSyncingFromBinding else { return }
         let text = textField.text ?? ""
         binding.value = WuiStr(string: text)
+    }
+
+    @objc private func editingDidEnd() {
+        focusTarget.emitPlatformFocusChange(false)
     }
     #endif
 }
 
 #if canImport(AppKit)
 extension WuiSecureField: NSTextFieldDelegate {
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        focusTarget.emitPlatformFocusChange(true)
+    }
+
     func controlTextDidChange(_ obj: Notification) {
         guard !isSyncingFromBinding else { return }
         let text = textField.stringValue
         binding.value = WuiStr(string: text)
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        focusTarget.emitPlatformFocusChange(false)
     }
 }
 #endif
