@@ -14,8 +14,132 @@ struct WuiNavigationTitle {
 }
 
 @MainActor
+struct WuiNavigationSearch {
+    let text: WuiBinding<WuiStr>
+    let prompt: String
+}
+
+@MainActor
+final class WuiNavigationSearchCoordinator: NSObject {
+    private let search: WuiNavigationSearch
+    private var watcher: WatcherGuard?
+    private var isSyncing = false
+
+    init(search: WuiNavigationSearch) {
+        self.search = search
+    }
+
+    #if canImport(UIKit)
+    private weak var uiSearchBar: UISearchBar?
+
+    func attach(searchBar: UISearchBar) {
+        uiSearchBar = searchBar
+        searchBar.placeholder = search.prompt
+        searchBar.delegate = self
+        applyText(search.text.value.toString())
+        watcher = search.text.watch { [weak self] value, _ in
+            self?.applyText(value.toString())
+        }
+    }
+
+    func attach(searchController: UISearchController) {
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.hidesNavigationBarDuringPresentation = false
+        attach(searchBar: searchController.searchBar)
+    }
+
+    private func applyText(_ text: String) {
+        guard let uiSearchBar else { return }
+        guard uiSearchBar.text != text else { return }
+        isSyncing = true
+        uiSearchBar.text = text
+        isSyncing = false
+    }
+    #elseif canImport(AppKit)
+    private weak var nsSearchField: NSSearchField?
+
+    func attach(searchField: NSSearchField) {
+        nsSearchField = searchField
+        searchField.placeholderString = search.prompt
+        searchField.sendsSearchStringImmediately = true
+        searchField.delegate = self
+        applyText(search.text.value.toString())
+        watcher = search.text.watch { [weak self] value, _ in
+            self?.applyText(value.toString())
+        }
+    }
+
+    private func applyText(_ text: String) {
+        guard let nsSearchField else { return }
+        guard nsSearchField.stringValue != text else { return }
+        isSyncing = true
+        nsSearchField.stringValue = text
+        isSyncing = false
+    }
+    #endif
+
+    fileprivate func updateBinding(_ text: String) {
+        guard !isSyncing else { return }
+        search.text.set(WuiStr(string: text))
+    }
+}
+
+#if canImport(UIKit)
+extension WuiNavigationSearchCoordinator: UISearchBarDelegate {
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+        updateBinding(searchText)
+    }
+
+    func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
+        searchBar.resignFirstResponder()
+    }
+}
+#elseif canImport(AppKit)
+extension WuiNavigationSearchCoordinator: NSSearchFieldDelegate {
+    func controlTextDidChange(_ notification: Notification) {
+        guard let field = notification.object as? NSSearchField else {
+            fatalError("Navigation search delegate received unexpected control")
+        }
+        updateBinding(field.stringValue)
+    }
+}
+#endif
+
+@MainActor
+func makeInlineNavigationSearchView(
+    _ search: WuiNavigationSearch
+) -> (PlatformView, WuiNavigationSearchCoordinator) {
+    let coordinator = WuiNavigationSearchCoordinator(search: search)
+    #if canImport(UIKit)
+    let searchBar = UISearchBar(frame: .zero)
+    searchBar.searchBarStyle = .minimal
+    coordinator.attach(searchBar: searchBar)
+    return (searchBar, coordinator)
+    #elseif canImport(AppKit)
+    let searchField = NSSearchField(frame: .zero)
+    coordinator.attach(searchField: searchField)
+    return (searchField, coordinator)
+    #endif
+}
+
+#if canImport(UIKit)
+@MainActor
+func makeNavigationSearchController(
+    _ search: WuiNavigationSearch
+) -> (UISearchController, WuiNavigationSearchCoordinator) {
+    let controller = UISearchController(searchResultsController: nil)
+    let coordinator = WuiNavigationSearchCoordinator(search: search)
+    coordinator.attach(searchController: controller)
+    return (controller, coordinator)
+}
+#endif
+
+@MainActor
 struct WuiNavigationBarState {
     let title: WuiNavigationTitle
+    let leading: WuiAnyView?
+    let trailing: WuiAnyView?
+    let search: WuiNavigationSearch?
     let color: WuiComputed<WuiResolvedColor>?
     let hidden: WuiComputed<Bool>?
 }
@@ -27,6 +151,8 @@ func makeNavigationBarState(from bar: CWaterUI.WuiBar, env: WuiEnvironment) -> W
     }
 
     let title = makeNavigationTitle(from: titlePtr, env: env)
+    let leading = bar.leading.map { WuiAnyView(anyview: $0, env: env) }
+    let trailing = bar.trailing.map { WuiAnyView(anyview: $0, env: env) }
 
     let color: WuiComputed<WuiResolvedColor>?
     if let colorPtr = bar.color {
@@ -46,7 +172,25 @@ func makeNavigationBarState(from bar: CWaterUI.WuiBar, env: WuiEnvironment) -> W
         hidden = nil
     }
 
-    return WuiNavigationBarState(title: title, color: color, hidden: hidden)
+    let search: WuiNavigationSearch?
+    if let searchPtr = bar.search {
+        let binding = WuiBinding<WuiStr>(searchPtr.pointee.text)
+        search = WuiNavigationSearch(
+            text: binding,
+            prompt: WuiStr(searchPtr.pointee.prompt).toString()
+        )
+    } else {
+        search = nil
+    }
+
+    return WuiNavigationBarState(
+        title: title,
+        leading: leading,
+        trailing: trailing,
+        search: search,
+        color: color,
+        hidden: hidden
+    )
 }
 
 @MainActor

@@ -301,6 +301,7 @@ private func registerBuiltinComponentsIfNeeded() {
     // Navigation components
     registerComponent(WuiNavigationStack.self)
     registerComponent(WuiNavigationView.self)
+    registerComponent(WuiNavigationSplitView.self)
     registerComponent(WuiTabs.self)
 
     // GPU components

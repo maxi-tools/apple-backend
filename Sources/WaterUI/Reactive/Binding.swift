@@ -89,6 +89,21 @@ private extension WuiBinding {
 }
 
 extension WuiBinding where T == WuiStr {
+    convenience init(_ inner: OpaquePointer) {
+        self.init(
+            inner: inner,
+            read: { inner in WuiStr(waterui_read_binding_str(inner)) },
+            watch: { inner, f in
+                let g = waterui_watch_binding_str(inner, makeStrWatcher(f))
+                return WatcherGuard(g!)
+            },
+            set: { inner, value in
+                waterui_set_binding_str(inner, value.intoInner())
+            },
+            drop: waterui_drop_binding_str
+        )
+    }
+
     convenience init(secure inner: OpaquePointer) {
         self.init(
             inner: inner,
