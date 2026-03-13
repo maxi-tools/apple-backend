@@ -16,7 +16,9 @@ final class WuiMenu: PlatformView, WuiComponent {
     private let labelView: any WuiComponent
     private let env: WuiEnvironment
     private let items: WuiComputed<CWaterUI.WuiArray_WuiMenuItem>
+    private let semanticAccessibilityLabel: WuiComputed<WuiStyledStr>?
     private var itemsWatcher: WatcherGuard?
+    private var semanticAccessibilityLabelWatcher: WatcherGuard?
 
     #if canImport(UIKit)
     private let button = UIButton(type: .system)
@@ -37,12 +39,15 @@ final class WuiMenu: PlatformView, WuiComponent {
             OpaquePointer(UnsafeMutableRawPointer(itemsPtr))
         )
 
-        // Resolve the label view
         self.labelView = WuiAnyView.resolve(anyview: menu.label, env: env)
+        self.semanticAccessibilityLabel = menu.accessibility_label.map {
+            WuiComputed<WuiStyledStr>(OpaquePointer(UnsafeMutableRawPointer($0)))
+        }
 
         super.init(frame: .zero)
 
         setupButton()
+        configureSemanticAccessibility()
         startWatching()
     }
 
@@ -51,12 +56,30 @@ final class WuiMenu: PlatformView, WuiComponent {
         fatalError("init(coder:) has not been implemented")
     }
 
+    private func configureSemanticAccessibility() {
+        guard let semanticAccessibilityLabel else { return }
+        applySemanticAccessibilityLabel(semanticAccessibilityLabel.value)
+        semanticAccessibilityLabelWatcher = semanticAccessibilityLabel.watch { [weak self] value, _ in
+            self?.applySemanticAccessibilityLabel(value)
+        }
+    }
+
+    private func applySemanticAccessibilityLabel(_ styled: WuiStyledStr) {
+        let text = styled.toString()
+        #if canImport(UIKit)
+        button.accessibilityLabel = text
+        button.isAccessibilityElement = true
+        #elseif canImport(AppKit)
+        button.setAccessibilityLabel(text)
+        button.toolTip = text
+        #endif
+    }
+
     private func setupButton() {
         #if canImport(UIKit)
         button.translatesAutoresizingMaskIntoConstraints = false
         addSubview(button)
 
-        // Add label as custom content
         labelView.translatesAutoresizingMaskIntoConstraints = false
         button.addSubview(labelView)
 
@@ -72,8 +95,7 @@ final class WuiMenu: PlatformView, WuiComponent {
             labelView.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -4)
         ])
 
-        // Build and attach menu
-        button.menu = buildUIMenu(items.value)
+        rebuildUIMenu(items.value)
         button.showsMenuAsPrimaryAction = true
 
         #elseif canImport(AppKit)
@@ -89,84 +111,29 @@ final class WuiMenu: PlatformView, WuiComponent {
             button.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
-        // Build menu items
         rebuildMenu(items.value)
         #endif
     }
 
-    private func buildMenuItems(_ array: CWaterUI.WuiArray_WuiMenuItem) -> [MenuItemData] {
-        let items = WuiArray<CWaterUI.WuiMenuItem>(array).toArray()
-        var menuItems: [MenuItemData] = []
-        menuItems.reserveCapacity(items.count)
-
-        for item in items {
-            guard let textPtr = item.label.content else {
-                fatalError("MenuItem.label.content is null")
-            }
-            let styledStr = waterui_read_computed_styled_str(textPtr)
-            let label = extractPlainText(from: styledStr)
-
-            let actionPtr: OpaquePointer? = item.action.map { OpaquePointer(UnsafeRawPointer($0)) }
-            menuItems.append(MenuItemData(label: label, actionPtr: actionPtr))
-        }
-        return menuItems
-    }
-
-    private func extractPlainText(from styledStr: CWaterUI.WuiStyledStr) -> String {
-        var result = ""
-        let chunks = styledStr.chunks
-        let slice = chunks.vtable.slice(chunks.data.assumingMemoryBound(to: Void.self))
-        guard let head = slice.head else { return "" }
-
-        for i in 0 ..< slice.len {
-            let chunk = head.advanced(by: Int(i)).pointee
-            let text = WuiStr(chunk.text)
-            result += text.toString()
-        }
-
-        return result
-    }
-
     #if canImport(UIKit)
-    private func buildUIMenu(_ array: CWaterUI.WuiArray_WuiMenuItem) -> UIMenu {
-        let menuItems = buildMenuItems(array)
-        var actions: [UIAction] = []
-
-        for item in menuItems {
-            let action = UIAction(title: item.label) { [weak self] _ in
-                guard let self = self, let actionPtr = item.actionPtr else { return }
-                waterui_call_shared_action(actionPtr, self.env.inner)
-            }
-            actions.append(action)
+    private func rebuildUIMenu(_ array: CWaterUI.WuiArray_WuiMenuItem) {
+        let nodes = parseMenuNodes(from: array)
+        button.menu = buildUIKitMenu(title: "", from: nodes) { [weak self] actionPtr in
+            guard let self else { return }
+            waterui_call_shared_action(actionPtr, self.env.inner)
         }
-
-        return UIMenu(title: "", children: actions)
     }
     #endif
 
     #if canImport(AppKit)
     private func rebuildMenu(_ array: CWaterUI.WuiArray_WuiMenuItem) {
-        button.removeAllItems()
-
-        // First item is the "title" shown when menu is closed
-        // For pullsDown menus, the first item is displayed as the button title
-        let labelText = extractLabelText()
-        button.addItem(withTitle: labelText)
-
-        let menuItems = buildMenuItems(array)
-        for (index, item) in menuItems.enumerated() {
-            button.addItem(withTitle: item.label)
-            if let menuItem = button.item(at: index + 1) {
-                menuItem.target = self
-                menuItem.action = #selector(menuItemClicked(_:))
-                menuItem.tag = index
-                menuItem.representedObject = item
-            }
-        }
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: extractLabelText(), action: nil, keyEquivalent: ""))
+        appendAppKitMenuItems(parseMenuNodes(from: array), to: menu, target: self, action: #selector(menuItemClicked(_:)))
+        button.menu = menu
     }
 
     private func extractLabelText() -> String {
-        // Try to extract text from the label view
         if let textBase = labelView as? WuiTextBase {
             return textBase.textField.stringValue
         }
@@ -174,11 +141,10 @@ final class WuiMenu: PlatformView, WuiComponent {
     }
 
     @objc private func menuItemClicked(_ sender: NSMenuItem) {
-        guard let item = sender.representedObject as? MenuItemData,
-              let actionPtr = item.actionPtr else {
+        guard let action = sender.representedObject as? MenuActionRef else {
             return
         }
-        waterui_call_shared_action(actionPtr, env.inner)
+        waterui_call_shared_action(action.actionPtr, env.inner)
     }
     #endif
 
@@ -187,7 +153,7 @@ final class WuiMenu: PlatformView, WuiComponent {
             guard let self else { return }
             withPlatformAnimation(metadata) {
                 #if canImport(UIKit)
-                self.button.menu = self.buildUIMenu(value)
+                self.rebuildUIMenu(value)
                 #elseif canImport(AppKit)
                 self.rebuildMenu(value)
                 #endif
@@ -227,16 +193,4 @@ final class WuiMenu: PlatformView, WuiComponent {
         super.layout()
     }
     #endif
-}
-
-// MARK: - Helper Types
-
-private class MenuItemData {
-    let label: String
-    let actionPtr: OpaquePointer?
-
-    init(label: String, actionPtr: OpaquePointer?) {
-        self.label = label
-        self.actionPtr = actionPtr
-    }
 }

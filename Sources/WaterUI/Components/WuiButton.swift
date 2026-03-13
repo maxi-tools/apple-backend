@@ -38,6 +38,8 @@ final class WuiButton: PlatformView, WuiComponent {
     private var action: Action
     private var labelView: WuiAnyView
     private let style: WuiButtonStyle
+    private let semanticAccessibilityLabel: WuiComputed<WuiStyledStr>?
+    private var semanticAccessibilityLabelWatcher: WatcherGuard?
 
     // MARK: - WuiComponent Init
 
@@ -45,21 +47,36 @@ final class WuiButton: PlatformView, WuiComponent {
         let ffiButton: CWaterUI.WuiButton = waterui_force_as_button(anyview)
         let labelView = WuiAnyView(anyview: ffiButton.label, env: env)
         let action = Action(inner: ffiButton.action, env: env)
-        self.init(label: labelView, action: action, style: ffiButton.style)
+        let accessibilityLabel = ffiButton.accessibility_label.map {
+            WuiComputed<WuiStyledStr>(OpaquePointer(UnsafeMutableRawPointer($0)))
+        }
+        self.init(
+            label: labelView,
+            action: action,
+            style: ffiButton.style,
+            semanticAccessibilityLabel: accessibilityLabel
+        )
     }
 
     // MARK: - Designated Init
 
-    init(label: WuiAnyView, action: Action, style: WuiButtonStyle = WuiButtonStyle_Automatic) {
+    init(
+        label: WuiAnyView,
+        action: Action,
+        style: WuiButtonStyle = WuiButtonStyle_Automatic,
+        semanticAccessibilityLabel: WuiComputed<WuiStyledStr>? = nil
+    ) {
         self.action = action
         self.labelView = label
         self.style = style
+        self.semanticAccessibilityLabel = semanticAccessibilityLabel
         #if canImport(AppKit)
         self.button = NSButton()
         #endif
         super.init(frame: .zero)
         configureButton()
         updateLabel(label)
+        configureSemanticAccessibility()
     }
 
     @available(*, unavailable)
@@ -119,6 +136,26 @@ final class WuiButton: PlatformView, WuiComponent {
     }
 
     // MARK: - Configuration
+
+    private func configureSemanticAccessibility() {
+        guard let semanticAccessibilityLabel else { return }
+        applySemanticAccessibilityLabel(semanticAccessibilityLabel.value)
+        semanticAccessibilityLabelWatcher = semanticAccessibilityLabel.watch { [weak self] value, _ in
+            self?.applySemanticAccessibilityLabel(value)
+        }
+    }
+
+    private func applySemanticAccessibilityLabel(_ styled: WuiStyledStr) {
+        let text = styled.toString()
+        #if canImport(UIKit)
+        button.accessibilityLabel = text
+        button.isAccessibilityElement = true
+        labelContainer.accessibilityElementsHidden = true
+        #elseif canImport(AppKit)
+        button.setAccessibilityLabel(text)
+        button.toolTip = text
+        #endif
+    }
 
     private func configureButton() {
         button.translatesAutoresizingMaskIntoConstraints = false
