@@ -1,0 +1,338 @@
+import Foundation
+
+private struct WaterKitAppleMediaCommandFFI {
+    var kind: Int32
+    var value_secs: Double
+}
+
+private enum WaterKitAppleMediaResult: Int32 {
+    case success = 0
+    case initializationFailed = 1
+    case updateFailed = 2
+    case audioFocusDenied = 3
+    case unknown = 4
+}
+
+private enum WaterKitAppleMediaCommandKind: Int32 {
+    case none = 0
+    case play = 1
+    case pause = 2
+    case playPause = 3
+    case stop = 4
+    case next = 5
+    case previous = 6
+    case seek = 7
+    case seekForward = 8
+    case seekBackward = 9
+    case audioFocusGained = 10
+    case audioFocusLost = 11
+    case audioFocusLostTransient = 12
+    case audioFocusLostDuck = 13
+    case audioBecomingNoisy = 14
+}
+
+@_silgen_name("waterkit_audio_apple_media_session_init")
+private func waterkitAudioAppleMediaSessionInit() -> Int32
+
+@_silgen_name("waterkit_audio_apple_media_session_set_metadata")
+private func waterkitAudioAppleMediaSessionSetMetadata(
+    _ title: UnsafePointer<CChar>?,
+    _ artist: UnsafePointer<CChar>?,
+    _ album: UnsafePointer<CChar>?,
+    _ artworkURL: UnsafePointer<CChar>?,
+    _ durationSeconds: Double
+) -> Int32
+
+@_silgen_name("waterkit_audio_apple_media_session_set_playback_state")
+private func waterkitAudioAppleMediaSessionSetPlaybackState(
+    _ status: UInt8,
+    _ positionSeconds: Double,
+    _ rate: Double,
+    _ nextEnabled: Bool,
+    _ previousEnabled: Bool
+) -> Int32
+
+@_silgen_name("waterkit_audio_apple_media_session_request_audio_focus")
+private func waterkitAudioAppleMediaSessionRequestAudioFocus() -> Int32
+
+@_silgen_name("waterkit_audio_apple_media_session_abandon_audio_focus")
+private func waterkitAudioAppleMediaSessionAbandonAudioFocus() -> Int32
+
+@_silgen_name("waterkit_audio_apple_media_session_clear")
+private func waterkitAudioAppleMediaSessionClear() -> Int32
+
+@_silgen_name("waterkit_audio_apple_media_session_poll_command")
+private func waterkitAudioAppleMediaSessionPollCommand() -> WaterKitAppleMediaCommandFFI
+
+struct WuiMediaMetadataSnapshot: Equatable {
+    var title: String
+    var artist: String
+    var album: String
+    var artworkURL: String
+    var durationSeconds: Double
+}
+
+enum WuiMediaPlaybackStatus: UInt8, Equatable {
+    case stopped = 0
+    case paused = 1
+    case playing = 2
+}
+
+struct WuiMediaPlaybackSnapshot: Equatable {
+    var status: WuiMediaPlaybackStatus
+    var positionSeconds: Double
+    var rate: Double
+    var nextEnabled: Bool
+    var previousEnabled: Bool
+}
+
+@MainActor
+protocol WuiMediaSessionHost: AnyObject {
+    var currentMediaMetadataSnapshot: WuiMediaMetadataSnapshot { get }
+    var currentMediaPlaybackSnapshot: WuiMediaPlaybackSnapshot { get }
+
+    func mediaSessionPlay()
+    func mediaSessionPause()
+    func mediaSessionStop()
+    func mediaSessionSeek(to seconds: Double)
+    func mediaSessionSetDucked(_ ducked: Bool)
+    func mediaSessionEmitNextRequested()
+    func mediaSessionEmitPreviousRequested()
+}
+
+private func withOptionalCString<R>(_ value: String, _ body: (UnsafePointer<CChar>?) -> R) -> R {
+    if value.isEmpty {
+        return body(nil)
+    }
+
+    return value.withCString { pointer in
+        body(pointer)
+    }
+}
+
+private func mediaSessionAssertSuccess(_ rawValue: Int32, context: String) {
+    guard let result = WaterKitAppleMediaResult(rawValue: rawValue) else {
+        fatalError("waterkit-audio returned unsupported Apple media result \(rawValue) for \(context)")
+    }
+
+    switch result {
+    case .success:
+        return
+    case .initializationFailed:
+        fatalError("waterkit-audio failed to initialize Apple media session for \(context)")
+    case .updateFailed:
+        fatalError("waterkit-audio failed to update Apple media session for \(context)")
+    case .audioFocusDenied:
+        fatalError("waterkit-audio Apple media session audio focus was denied for \(context)")
+    case .unknown:
+        fatalError("waterkit-audio Apple media session returned an unknown error for \(context)")
+    }
+}
+
+@MainActor
+final class WuiWaterKitMediaSessionBridge {
+    private weak var host: (any WuiMediaSessionHost)?
+    private var timer: Timer?
+    private var lastMetadata: WuiMediaMetadataSnapshot?
+    private var lastPlayback: WuiMediaPlaybackSnapshot?
+    private var audioSessionActive = false
+    private var resumeAfterFocusGain = false
+
+    init(host: any WuiMediaSessionHost) {
+        self.host = host
+        mediaSessionAssertSuccess(
+            waterkitAudioAppleMediaSessionInit(),
+            context: "media session initialization"
+        )
+        syncMetadataIfNeeded(force: true)
+        syncPlaybackStateIfNeeded(force: true)
+        startPolling()
+    }
+
+    func metadataDidChange() {
+        syncMetadataIfNeeded(force: false)
+    }
+
+    func playbackDidChange() {
+        syncPlaybackStateIfNeeded(force: false)
+    }
+
+    private func startPolling() {
+        let timer = Timer(
+            timeInterval: 0.25,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.tick()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func tick() {
+        pollCommands()
+        syncMetadataIfNeeded(force: false)
+        syncPlaybackStateIfNeeded(force: false)
+    }
+
+    private func syncMetadataIfNeeded(force: Bool) {
+        guard let host else { return }
+
+        let metadata = host.currentMediaMetadataSnapshot
+        if !force && metadata == lastMetadata {
+            return
+        }
+
+        withOptionalCString(metadata.title) { title in
+            withOptionalCString(metadata.artist) { artist in
+                withOptionalCString(metadata.album) { album in
+                    withOptionalCString(metadata.artworkURL) { artworkURL in
+                        mediaSessionAssertSuccess(
+                            waterkitAudioAppleMediaSessionSetMetadata(
+                                title,
+                                artist,
+                                album,
+                                artworkURL,
+                                metadata.durationSeconds
+                            ),
+                            context: "metadata sync"
+                        )
+                    }
+                }
+            }
+        }
+
+        lastMetadata = metadata
+    }
+
+    private func syncPlaybackStateIfNeeded(force: Bool) {
+        guard let host else { return }
+
+        let snapshot = host.currentMediaPlaybackSnapshot
+        let shouldHoldAudioSession = snapshot.status != .stopped
+
+        if shouldHoldAudioSession && !audioSessionActive {
+            mediaSessionAssertSuccess(
+                waterkitAudioAppleMediaSessionRequestAudioFocus(),
+                context: "audio session activation"
+            )
+            audioSessionActive = true
+        } else if !shouldHoldAudioSession && audioSessionActive {
+            mediaSessionAssertSuccess(
+                waterkitAudioAppleMediaSessionAbandonAudioFocus(),
+                context: "audio session deactivation"
+            )
+            audioSessionActive = false
+        }
+
+        if !force && snapshot == lastPlayback {
+            return
+        }
+
+        mediaSessionAssertSuccess(
+            waterkitAudioAppleMediaSessionSetPlaybackState(
+                snapshot.status.rawValue,
+                snapshot.positionSeconds,
+                snapshot.rate,
+                snapshot.nextEnabled,
+                snapshot.previousEnabled
+            ),
+            context: "playback state sync"
+        )
+        lastPlayback = snapshot
+    }
+
+    private func pollCommands() {
+        while true {
+            let command = waterkitAudioAppleMediaSessionPollCommand()
+            guard let kind = WaterKitAppleMediaCommandKind(rawValue: command.kind) else {
+                fatalError("waterkit-audio returned unsupported Apple media command \(command.kind)")
+            }
+            if kind == .none {
+                return
+            }
+            handleCommand(kind, valueSeconds: command.value_secs)
+        }
+    }
+
+    private func handleCommand(
+        _ command: WaterKitAppleMediaCommandKind,
+        valueSeconds: Double
+    ) {
+        guard let host else { return }
+
+        switch command {
+        case .none:
+            return
+        case .play:
+            host.mediaSessionPlay()
+        case .pause:
+            host.mediaSessionPause()
+        case .playPause:
+            if host.currentMediaPlaybackSnapshot.status == .playing {
+                host.mediaSessionPause()
+            } else {
+                host.mediaSessionPlay()
+            }
+        case .stop:
+            resumeAfterFocusGain = false
+            host.mediaSessionSetDucked(false)
+            host.mediaSessionStop()
+        case .next:
+            if host.currentMediaPlaybackSnapshot.nextEnabled {
+                host.mediaSessionEmitNextRequested()
+            }
+        case .previous:
+            if host.currentMediaPlaybackSnapshot.previousEnabled {
+                host.mediaSessionEmitPreviousRequested()
+            }
+        case .seek:
+            host.mediaSessionSeek(to: valueSeconds)
+        case .seekForward:
+            host.mediaSessionSeek(
+                to: host.currentMediaPlaybackSnapshot.positionSeconds + valueSeconds
+            )
+        case .seekBackward:
+            host.mediaSessionSeek(
+                to: max(0, host.currentMediaPlaybackSnapshot.positionSeconds - valueSeconds)
+            )
+        case .audioFocusGained:
+            host.mediaSessionSetDucked(false)
+            if resumeAfterFocusGain {
+                resumeAfterFocusGain = false
+                host.mediaSessionPlay()
+            }
+        case .audioFocusLost:
+            resumeAfterFocusGain = false
+            host.mediaSessionSetDucked(false)
+            host.mediaSessionPause()
+        case .audioFocusLostTransient:
+            resumeAfterFocusGain = host.currentMediaPlaybackSnapshot.status == .playing
+            host.mediaSessionPause()
+        case .audioFocusLostDuck:
+            host.mediaSessionSetDucked(true)
+        case .audioBecomingNoisy:
+            resumeAfterFocusGain = false
+            host.mediaSessionPause()
+        }
+
+        syncPlaybackStateIfNeeded(force: true)
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            timer?.invalidate()
+            if audioSessionActive {
+                mediaSessionAssertSuccess(
+                    waterkitAudioAppleMediaSessionAbandonAudioFocus(),
+                    context: "audio session deactivation"
+                )
+            }
+            mediaSessionAssertSuccess(
+                waterkitAudioAppleMediaSessionClear(),
+                context: "media session teardown"
+            )
+        }
+    }
+}

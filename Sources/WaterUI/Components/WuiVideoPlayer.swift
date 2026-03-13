@@ -25,6 +25,80 @@ import UIKit
 import AppKit
 #endif
 
+#if canImport(AppKit)
+private final class WuiVideoPlayerPictureInPictureDelegateProxy: NSObject, AVPlayerViewPictureInPictureDelegate {
+    private let owner: Unmanaged<WuiVideoPlayer>
+
+    init(owner: WuiVideoPlayer) {
+        self.owner = Unmanaged.passUnretained(owner)
+    }
+
+    func playerViewDidStartPicture(inPicture playerView: AVPlayerView) {
+        let owner = owner.takeUnretainedValue()
+        MainActor.assumeIsolated {
+            owner.emitPictureInPictureChanged(true)
+        }
+    }
+
+    func playerViewDidStopPicture(inPicture playerView: AVPlayerView) {
+        let owner = owner.takeUnretainedValue()
+        MainActor.assumeIsolated {
+            owner.emitPictureInPictureChanged(false)
+        }
+    }
+
+    func playerView(
+        _ playerView: AVPlayerView,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        let owner = owner.takeUnretainedValue()
+        MainActor.assumeIsolated {
+            owner.emitEvent(
+                eventType: CWaterUI.WuiVideoEventType_Error,
+                errorMessage: error.localizedDescription
+            )
+        }
+    }
+}
+#endif
+
+#if canImport(UIKit)
+private final class WuiVideoPlayerViewControllerDelegateProxy: NSObject, AVPlayerViewControllerDelegate {
+    private let owner: Unmanaged<WuiVideoPlayer>
+
+    init(owner: WuiVideoPlayer) {
+        self.owner = Unmanaged.passUnretained(owner)
+    }
+
+    func playerViewControllerDidStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
+        let owner = owner.takeUnretainedValue()
+        MainActor.assumeIsolated {
+            owner.emitPictureInPictureChanged(true)
+        }
+    }
+
+    func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
+        let owner = owner.takeUnretainedValue()
+        MainActor.assumeIsolated {
+            owner.emitPictureInPictureChanged(false)
+        }
+    }
+
+    func playerViewController(
+        _ playerViewController: AVPlayerViewController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        let owner = owner.takeUnretainedValue()
+        MainActor.assumeIsolated {
+            owner.emitEvent(
+                eventType: CWaterUI.WuiVideoEventType_Error,
+                errorMessage: error.localizedDescription
+            )
+        }
+    }
+}
+#endif
+
 extension AVLayerVideoGravity {
     static func from(_ aspect: WuiAspectRatio) -> AVLayerVideoGravity {
         switch aspect {
@@ -36,8 +110,6 @@ extension AVLayerVideoGravity {
     }
 }
 
-/// Full-featured video player with native playback controls.
-/// Uses AVPlayerViewController (iOS) or AVPlayerView (macOS).
 @MainActor
 final class WuiVideoPlayer: PlatformView, WuiComponent {
     static var rawId: CWaterUI.WuiTypeId { waterui_video_player_id() }
@@ -47,45 +119,116 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
     private let player: AVPlayer
     private let showControls: Bool
 
-    // Platform-specific player views
     #if canImport(AppKit)
     private var playerView: AVPlayerView?
+    private var pictureInPictureDelegateProxy: WuiVideoPlayerPictureInPictureDelegateProxy?
     #elseif canImport(UIKit)
     private var playerViewController: AVPlayerViewController?
+    private var playerViewControllerDelegateProxy: WuiVideoPlayerViewControllerDelegateProxy?
     #endif
 
     private var sourceComputed: WuiComputed<WuiStr>
+    private var titleComputed: WuiComputed<WuiStr>
+    private var artistComputed: WuiComputed<WuiStr>
+    private var albumComputed: WuiComputed<WuiStr>
+    private var artworkURLComputed: WuiComputed<WuiStr>
+    private var durationSecondsComputed: WuiComputed<Double>
+    private var hasNextBinding: WuiBinding<Bool>
+    private var hasPreviousBinding: WuiBinding<Bool>
     private var volumeBinding: WuiBinding<Float>
+    private var playbackRateBinding: WuiBinding<Float>
+    private var preservePitchBinding: WuiBinding<Bool>
     private var onEvent: CWaterUI.WuiFn_WuiVideoEvent
     private var sourceWatcher: WatcherGuard?
+    private var titleWatcher: WatcherGuard?
+    private var artistWatcher: WatcherGuard?
+    private var albumWatcher: WatcherGuard?
+    private var artworkURLWatcher: WatcherGuard?
+    private var durationSecondsWatcher: WatcherGuard?
+    private var hasNextWatcher: WatcherGuard?
+    private var hasPreviousWatcher: WatcherGuard?
     private var volumeWatcher: WatcherGuard?
+    private var playbackRateWatcher: WatcherGuard?
+    private var preservePitchWatcher: WatcherGuard?
     private var statusObserver: NSKeyValueObservation?
     private var bufferEmptyObserver: NSKeyValueObservation?
     private var likelyToKeepUpObserver: NSKeyValueObservation?
     private var currentURL: URL?
     private var isBuffering = false
-
-    // MARK: - WuiComponent Init
+    private var reportedPictureInPictureActive: Bool?
+    private var requestedVolume: Float = 0.5
+    private var requestedPlaybackRate: Float = 1.0
+    private var preservePitch = true
+    private var isDucked = false
+    private var mediaSessionBridge: WuiWaterKitMediaSessionBridge?
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let stretchAxis = WuiStretchAxis(waterui_view_stretch_axis(anyview))
         let ffiVideoPlayer: CWaterUI.WuiVideoPlayer = waterui_force_as_video_player(anyview)
 
         let sourceComputed = WuiComputed<WuiStr>(ffiVideoPlayer.source!)
+        let titleComputed = WuiComputed<WuiStr>(ffiVideoPlayer.title!)
+        let artistComputed = WuiComputed<WuiStr>(ffiVideoPlayer.artist!)
+        let albumComputed = WuiComputed<WuiStr>(ffiVideoPlayer.album!)
+        let artworkURLComputed = WuiComputed<WuiStr>(ffiVideoPlayer.artwork_url!)
+        let durationSecondsComputed = WuiComputed<Double>(ffiVideoPlayer.duration_seconds!)
+        let hasNextBinding = WuiBinding<Bool>(ffiVideoPlayer.has_next!)
+        let hasPreviousBinding = WuiBinding<Bool>(ffiVideoPlayer.has_previous!)
         let volumeBinding = WuiBinding<Float>(ffiVideoPlayer.volume!)
+        let playbackRateBinding = WuiBinding<Float>(ffiVideoPlayer.playback_rate!)
+        let preservePitchBinding = WuiBinding<Bool>(ffiVideoPlayer.preserve_pitch!)
         let aspectRatio = AVLayerVideoGravity.from(ffiVideoPlayer.aspect_ratio)
         let showControls = ffiVideoPlayer.show_controls
         let onEvent = ffiVideoPlayer.on_event
 
-        self.init(stretchAxis: stretchAxis, source: sourceComputed, volume: volumeBinding, aspectRatio: aspectRatio, showControls: showControls, onEvent: onEvent)
+        self.init(
+            stretchAxis: stretchAxis,
+            source: sourceComputed,
+            title: titleComputed,
+            artist: artistComputed,
+            album: albumComputed,
+            artworkURL: artworkURLComputed,
+            durationSeconds: durationSecondsComputed,
+            hasNext: hasNextBinding,
+            hasPrevious: hasPreviousBinding,
+            volume: volumeBinding,
+            playbackRate: playbackRateBinding,
+            preservePitch: preservePitchBinding,
+            aspectRatio: aspectRatio,
+            showControls: showControls,
+            onEvent: onEvent
+        )
     }
 
-    // MARK: - Designated Init
-
-    init(stretchAxis: WuiStretchAxis, source: WuiComputed<WuiStr>, volume: WuiBinding<Float>, aspectRatio: AVLayerVideoGravity, showControls: Bool, onEvent: CWaterUI.WuiFn_WuiVideoEvent) {
+    init(
+        stretchAxis: WuiStretchAxis,
+        source: WuiComputed<WuiStr>,
+        title: WuiComputed<WuiStr>,
+        artist: WuiComputed<WuiStr>,
+        album: WuiComputed<WuiStr>,
+        artworkURL: WuiComputed<WuiStr>,
+        durationSeconds: WuiComputed<Double>,
+        hasNext: WuiBinding<Bool>,
+        hasPrevious: WuiBinding<Bool>,
+        volume: WuiBinding<Float>,
+        playbackRate: WuiBinding<Float>,
+        preservePitch: WuiBinding<Bool>,
+        aspectRatio: AVLayerVideoGravity,
+        showControls: Bool,
+        onEvent: CWaterUI.WuiFn_WuiVideoEvent
+    ) {
         self.stretchAxis = stretchAxis
         self.sourceComputed = source
+        self.titleComputed = title
+        self.artistComputed = artist
+        self.albumComputed = album
+        self.artworkURLComputed = artworkURL
+        self.durationSecondsComputed = durationSeconds
+        self.hasNextBinding = hasNext
+        self.hasPreviousBinding = hasPrevious
         self.volumeBinding = volume
+        self.playbackRateBinding = playbackRate
+        self.preservePitchBinding = preservePitch
         self.onEvent = onEvent
         self.player = AVPlayer()
         self.showControls = showControls
@@ -100,9 +243,13 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
         #endif
 
         configurePlayerView(aspectRatio: aspectRatio)
+        updatePreservePitch(preservePitchBinding.value)
+        updatePlaybackRate(playbackRateBinding.value)
         updateSource(sourceComputed.value)
-        updateVolume(volume.value)
+        updateVolume(volumeBinding.value)
         startWatchers()
+        mediaSessionBridge = WuiWaterKitMediaSessionBridge(host: self)
+        emitPictureInPictureChanged(false)
     }
 
     @available(*, unavailable)
@@ -110,18 +257,18 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
         fatalError("init(coder:) has not been implemented")
     }
 
-    // MARK: - Configuration
-
     private func configurePlayerView(aspectRatio: AVLayerVideoGravity) {
         #if canImport(AppKit)
-        // macOS: Use AVPlayerView for native controls
         let pv = AVPlayerView()
         pv.player = player
         pv.controlsStyle = showControls ? .inline : .none
         pv.showsFullScreenToggleButton = showControls
+        pv.allowsPictureInPicturePlayback = true
         pv.translatesAutoresizingMaskIntoConstraints = false
 
-        // Set video gravity
+        let pictureInPictureDelegateProxy = WuiVideoPlayerPictureInPictureDelegateProxy(owner: self)
+        pv.pictureInPictureDelegate = pictureInPictureDelegateProxy
+
         switch aspectRatio {
         case .resizeAspect:
             pv.videoGravity = .resizeAspect
@@ -138,32 +285,31 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
             pv.topAnchor.constraint(equalTo: topAnchor),
             pv.leadingAnchor.constraint(equalTo: leadingAnchor),
             pv.trailingAnchor.constraint(equalTo: trailingAnchor),
-            pv.bottomAnchor.constraint(equalTo: bottomAnchor)
+            pv.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         if let layer = pv.layer {
             applyResolvedDynamicRange(to: layer, for: self)
         }
-        self.playerView = pv
+        playerView = pv
+        self.pictureInPictureDelegateProxy = pictureInPictureDelegateProxy
 
         #elseif canImport(UIKit)
-        // iOS/tvOS: Use AVPlayerViewController for native controls
         let pvc = AVPlayerViewController()
         pvc.player = player
+        let delegateProxy = WuiVideoPlayerViewControllerDelegateProxy(owner: self)
+        pvc.delegate = delegateProxy
         pvc.showsPlaybackControls = showControls
+        pvc.allowsPictureInPicturePlayback = true
+        pvc.canStartPictureInPictureAutomaticallyFromInline = true
         pvc.view.translatesAutoresizingMaskIntoConstraints = true
-
-        // Disable safe area inset adjustments for edge-to-edge video
         pvc.view.insetsLayoutMarginsFromSafeArea = false
-
-        // Set video gravity
         pvc.videoGravity = aspectRatio
 
         addSubview(pvc.view)
         applyResolvedDynamicRange(to: pvc.view.layer, for: self)
-        self.playerViewController = pvc
+        playerViewController = pvc
+        playerViewControllerDelegateProxy = delegateProxy
 
-        // When controls are hidden, make the player transparent to touches
-        // so overlaid views (like custom controls) can receive touches
         if !showControls {
             pvc.view.isUserInteractionEnabled = false
         }
@@ -176,23 +322,17 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
     override func didMoveToWindow() {
         super.didMoveToWindow()
 
-        // AVPlayerViewController requires proper view controller containment for controls to work
         guard let pvc = playerViewController else { return }
 
         if window != nil {
-            // Find the parent view controller and add player as child
-            if let parentVC = findParentViewController() {
-                if pvc.parent == nil {
-                    parentVC.addChild(pvc)
-                    pvc.didMove(toParent: parentVC)
-                }
+            if let parentVC = findParentViewController(), pvc.parent == nil {
+                parentVC.addChild(pvc)
+                pvc.didMove(toParent: parentVC)
             }
         } else {
-            // Immediately pause playback when removed from window (e.g., during hot reload)
-            // This prevents double sound when the view is being replaced
             player.pause()
+            mediaSessionBridge?.playbackDidChange()
 
-            // Remove from parent when leaving window
             if pvc.parent != nil {
                 pvc.willMove(toParent: nil)
                 pvc.removeFromParent()
@@ -221,12 +361,9 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
         )
     }
 
-    // MARK: - WuiComponent
-
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
-        // Video player expands to fill available space (both axes stretch)
         let defaultWidth: CGFloat = 320
-        let defaultHeight: CGFloat = 180 // 16:9 aspect ratio
+        let defaultHeight: CGFloat = 180
 
         let width = proposal.width.map { CGFloat($0) } ?? defaultWidth
         let height = proposal.height.map { CGFloat($0) } ?? defaultHeight
@@ -234,12 +371,9 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
         return CGSize(width: width, height: height)
     }
 
-    // MARK: - Layout
-
     #if canImport(UIKit)
     override func layoutSubviews() {
         super.layoutSubviews()
-        // AVPlayerViewController's view uses frame-based layout
         playerViewController?.view.frame = bounds
         if let layer = playerViewController?.view.layer {
             applyResolvedDynamicRange(to: layer, for: self)
@@ -249,16 +383,14 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
 
-        // Pause playback when removed from window (e.g., during hot reload)
-        // This prevents double sound when the view is being replaced
         if window == nil {
             player.pause()
+            mediaSessionBridge?.playbackDidChange()
         }
     }
 
     override func layout() {
         super.layout()
-        // AVPlayerView uses auto-layout constraints set during configuration
         if let layer = playerView?.layer {
             applyResolvedDynamicRange(to: layer, for: self)
         }
@@ -272,31 +404,51 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
     }
     #endif
 
-    // MARK: - Event Handling
-
     @objc private func playerItemDidReachEnd(_ notification: Notification) {
-        guard let playerItem = notification.object as? AVPlayerItem,
-              playerItem == player.currentItem
+        guard let playerItem = notification.object as? AVPlayerItem, playerItem == player.currentItem
         else { return }
 
-        // Emit ended event
-        let event = CWaterUI.WuiVideoEvent(
-            event_type: CWaterUI.WuiVideoEventType_Ended,
-            error_message: WuiStr(string: "").intoInner(),
-            buffered_ms: 0,
-            av_drift_ms: 0,
-            dropped_video_frames: 0
-        )
-        onEvent.call(onEvent.data, event)
+        emitEvent(eventType: CWaterUI.WuiVideoEventType_Ended)
+        mediaSessionBridge?.playbackDidChange()
+        mediaSessionBridge?.metadataDidChange()
     }
 
     private func startWatchers() {
         sourceWatcher = sourceComputed.watch { [weak self] source, _ in
             self?.updateSource(source)
+            self?.mediaSessionBridge?.metadataDidChange()
+            self?.mediaSessionBridge?.playbackDidChange()
         }
 
+        titleWatcher = titleComputed.watch { [weak self] _, _ in
+            self?.mediaSessionBridge?.metadataDidChange()
+        }
+        artistWatcher = artistComputed.watch { [weak self] _, _ in
+            self?.mediaSessionBridge?.metadataDidChange()
+        }
+        albumWatcher = albumComputed.watch { [weak self] _, _ in
+            self?.mediaSessionBridge?.metadataDidChange()
+        }
+        artworkURLWatcher = artworkURLComputed.watch { [weak self] _, _ in
+            self?.mediaSessionBridge?.metadataDidChange()
+        }
+        durationSecondsWatcher = durationSecondsComputed.watch { [weak self] _, _ in
+            self?.mediaSessionBridge?.metadataDidChange()
+        }
+        hasNextWatcher = hasNextBinding.watch { [weak self] _, _ in
+            self?.mediaSessionBridge?.playbackDidChange()
+        }
+        hasPreviousWatcher = hasPreviousBinding.watch { [weak self] _, _ in
+            self?.mediaSessionBridge?.playbackDidChange()
+        }
         volumeWatcher = volumeBinding.watch { [weak self] volume, _ in
             self?.updateVolume(volume)
+        }
+        playbackRateWatcher = playbackRateBinding.watch { [weak self] rate, _ in
+            self?.updatePlaybackRate(rate)
+        }
+        preservePitchWatcher = preservePitchBinding.watch { [weak self] preservePitch, _ in
+            self?.updatePreservePitch(preservePitch)
         }
     }
 
@@ -304,127 +456,258 @@ final class WuiVideoPlayer: PlatformView, WuiComponent {
         let urlString = source.toString()
 
         guard let url = URL(string: urlString) else {
-            // Emit error event
-            let event = CWaterUI.WuiVideoEvent(
-                event_type: CWaterUI.WuiVideoEventType_Error,
-                error_message: WuiStr(string: "Invalid video URL").intoInner(),
-                buffered_ms: 0,
-                av_drift_ms: 0,
-                dropped_video_frames: 0
+            currentURL = nil
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            emitEvent(
+                eventType: CWaterUI.WuiVideoEventType_Error,
+                errorMessage: "Invalid video URL"
             )
-            onEvent.call(onEvent.data, event)
+            mediaSessionBridge?.metadataDidChange()
+            mediaSessionBridge?.playbackDidChange()
             return
         }
 
-        // Avoid reloading if URL hasn't changed
         guard url != currentURL else {
             return
         }
         currentURL = url
+        isBuffering = false
 
         let playerItem = AVPlayerItem(url: url)
+        applyPitchAlgorithm(to: playerItem)
 
-        // Observe player item status for events
         statusObserver = playerItem.observe(\.status, options: [.new]) { [weak self] item, _ in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self else { return }
                 switch item.status {
                 case .failed:
-                    let errorMessage: String
-                    if let error = item.error {
-                        errorMessage = error.localizedDescription
-                    } else {
-                        errorMessage = "Failed to load video. Check network access and sandbox permissions."
-                    }
-                    // Emit error event
-                    let event = CWaterUI.WuiVideoEvent(
-                        event_type: CWaterUI.WuiVideoEventType_Error,
-                        error_message: WuiStr(string: errorMessage).intoInner(),
-                        buffered_ms: 0,
-                        av_drift_ms: 0,
-                        dropped_video_frames: 0
+                    let errorMessage = item.error?.localizedDescription
+                        ?? "Failed to load video. Check network access and sandbox permissions."
+                    self.emitEvent(
+                        eventType: CWaterUI.WuiVideoEventType_Error,
+                        errorMessage: errorMessage
                     )
-                    self.onEvent.call(self.onEvent.data, event)
                 case .readyToPlay:
-                    // Emit ready event
-                    let event = CWaterUI.WuiVideoEvent(
-                        event_type: CWaterUI.WuiVideoEventType_ReadyToPlay,
-                        error_message: WuiStr(string: "").intoInner(),
-                        buffered_ms: 0,
-                        av_drift_ms: 0,
-                        dropped_video_frames: 0
-                    )
-                    self.onEvent.call(self.onEvent.data, event)
+                    self.emitEvent(eventType: CWaterUI.WuiVideoEventType_ReadyToPlay)
+                    self.mediaSessionBridge?.metadataDidChange()
+                    self.mediaSessionBridge?.playbackDidChange()
                 case .unknown:
                     break
                 @unknown default:
-                    break
+                    fatalError("Unsupported AVPlayerItem status")
                 }
             }
         }
 
-        // Observe buffering state - when buffer is empty
-        bufferEmptyObserver = playerItem.observe(\.isPlaybackBufferEmpty, options: [.new]) { [weak self] item, _ in
+        bufferEmptyObserver = playerItem.observe(\.isPlaybackBufferEmpty, options: [.new]) {
+            [weak self] item, _ in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self else { return }
                 if item.isPlaybackBufferEmpty && !self.isBuffering {
                     self.isBuffering = true
-                    let event = CWaterUI.WuiVideoEvent(
-                        event_type: CWaterUI.WuiVideoEventType_Buffering,
-                        error_message: WuiStr(string: "").intoInner(),
-                        buffered_ms: 0,
-                        av_drift_ms: 0,
-                        dropped_video_frames: 0
-                    )
-                    self.onEvent.call(self.onEvent.data, event)
+                    self.emitEvent(eventType: CWaterUI.WuiVideoEventType_Buffering)
+                    self.mediaSessionBridge?.playbackDidChange()
                 }
             }
         }
 
-        // Observe buffering state - when playback is likely to keep up
-        likelyToKeepUpObserver = playerItem.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self] item, _ in
+        likelyToKeepUpObserver = playerItem.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) {
+            [weak self] item, _ in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self else { return }
                 if item.isPlaybackLikelyToKeepUp && self.isBuffering {
                     self.isBuffering = false
-                    let event = CWaterUI.WuiVideoEvent(
-                        event_type: CWaterUI.WuiVideoEventType_BufferingEnded,
-                        error_message: WuiStr(string: "").intoInner(),
-                        buffered_ms: 0,
-                        av_drift_ms: 0,
-                        dropped_video_frames: 0
-                    )
-                    self.onEvent.call(self.onEvent.data, event)
+                    self.emitEvent(eventType: CWaterUI.WuiVideoEventType_BufferingEnded)
+                    self.mediaSessionBridge?.playbackDidChange()
                 }
             }
         }
 
         player.replaceCurrentItem(with: playerItem)
+        updatePlaybackRate(playbackRateBinding.value)
 
-        // Start playing after a brief delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.player.play()
+            self?.mediaSessionPlay()
         }
     }
 
     private func updateVolume(_ volume: Float) {
-        // Volume encoding: negative = muted (preserves volume level)
-        if volume < 0 {
-            player.isMuted = true
-        } else {
-            player.isMuted = false
-            player.volume = volume
-        }
+        requestedVolume = volume
+        applyEffectiveVolume()
     }
 
-    @MainActor deinit {
-        NotificationCenter.default.removeObserver(self)
-        sourceWatcher = nil
-        volumeWatcher = nil
-        statusObserver?.invalidate()
-        bufferEmptyObserver?.invalidate()
-        likelyToKeepUpObserver?.invalidate()
+    private func applyEffectiveVolume() {
+        let baseVolume = abs(requestedVolume)
+        player.isMuted = requestedVolume < 0
+        player.volume = isDucked ? (baseVolume * 0.2) : baseVolume
+        mediaSessionBridge?.playbackDidChange()
+    }
+
+    private func updatePlaybackRate(_ rate: Float) {
+        precondition(rate.isFinite && rate > 0, "video playback rate must be finite and positive")
+        requestedPlaybackRate = rate
+        if currentMediaPlaybackSnapshot.status == .playing {
+            player.rate = requestedPlaybackRate
+        }
+        mediaSessionBridge?.playbackDidChange()
+    }
+
+    private func updatePreservePitch(_ enabled: Bool) {
+        preservePitch = enabled
+        applyPitchAlgorithm(to: player.currentItem)
+    }
+
+    private func applyPitchAlgorithm(to item: AVPlayerItem?) {
+        guard let item else { return }
+        item.audioTimePitchAlgorithm = preservePitch ? .spectral : .varispeed
+    }
+
+    private func resolvedDurationSeconds() -> Double {
+        let configuredDuration = durationSecondsComputed.value
+        if configuredDuration >= 0 {
+            return configuredDuration
+        }
+
+        let actualDuration = player.currentItem?.duration.seconds ?? -1
+        if actualDuration.isFinite && actualDuration >= 0 {
+            return actualDuration
+        }
+        return -1
+    }
+
+    fileprivate func emitEvent(
+        eventType: CWaterUI.WuiVideoEventType,
+        errorMessage: String = "",
+        bufferedMs: UInt32 = 0,
+        avDriftMs: Float = 0,
+        droppedVideoFrames: UInt64 = 0,
+        pictureInPictureActive: Bool = false
+    ) {
+        let event = CWaterUI.WuiVideoEvent(
+            event_type: eventType,
+            error_message: WuiStr(string: errorMessage).intoInner(),
+            buffered_ms: bufferedMs,
+            av_drift_ms: avDriftMs,
+            dropped_video_frames: droppedVideoFrames,
+            picture_in_picture_active: pictureInPictureActive
+        )
+        onEvent.call(onEvent.data, event)
+    }
+
+    fileprivate func emitPictureInPictureChanged(_ active: Bool) {
+        guard reportedPictureInPictureActive != active else {
+            return
+        }
+        reportedPictureInPictureActive = active
+        emitEvent(
+            eventType: CWaterUI.WuiVideoEventType_PictureInPictureChanged,
+            pictureInPictureActive: active
+        )
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            mediaSessionBridge = nil
+            NotificationCenter.default.removeObserver(self)
+            sourceWatcher = nil
+            titleWatcher = nil
+            artistWatcher = nil
+            albumWatcher = nil
+            artworkURLWatcher = nil
+            durationSecondsWatcher = nil
+            hasNextWatcher = nil
+            hasPreviousWatcher = nil
+            volumeWatcher = nil
+            playbackRateWatcher = nil
+            preservePitchWatcher = nil
+            statusObserver?.invalidate()
+            bufferEmptyObserver?.invalidate()
+            likelyToKeepUpObserver?.invalidate()
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+        }
+    }
+}
+
+@MainActor
+extension WuiVideoPlayer: WuiMediaSessionHost {
+    var currentMediaMetadataSnapshot: WuiMediaMetadataSnapshot {
+        let currentURL = self.currentURL
+        let fallbackTitle = currentURL?.lastPathComponent.isEmpty == false
+            ? currentURL?.lastPathComponent ?? ""
+            : currentURL?.absoluteString ?? ""
+        let configuredTitle = titleComputed.value.toString()
+
+        return WuiMediaMetadataSnapshot(
+            title: configuredTitle.isEmpty ? fallbackTitle : configuredTitle,
+            artist: artistComputed.value.toString(),
+            album: albumComputed.value.toString(),
+            artworkURL: artworkURLComputed.value.toString(),
+            durationSeconds: resolvedDurationSeconds()
+        )
+    }
+
+    var currentMediaPlaybackSnapshot: WuiMediaPlaybackSnapshot {
+        let status: WuiMediaPlaybackStatus
+        if player.currentItem == nil {
+            status = .stopped
+        } else {
+            switch player.timeControlStatus {
+            case .paused:
+                status = .paused
+            case .waitingToPlayAtSpecifiedRate, .playing:
+                status = .playing
+            @unknown default:
+                fatalError("Unsupported AVPlayer time control status")
+            }
+        }
+
+        let positionSeconds = max(0, player.currentTime().seconds.isFinite ? player.currentTime().seconds : 0)
+        let playbackRate = status == .playing ? Double(requestedPlaybackRate) : 0.0
+
+        return WuiMediaPlaybackSnapshot(
+            status: status,
+            positionSeconds: positionSeconds,
+            rate: playbackRate,
+            nextEnabled: hasNextBinding.value,
+            previousEnabled: hasPreviousBinding.value
+        )
+    }
+
+    func mediaSessionPlay() {
+        guard player.currentItem != nil else { return }
+        player.play()
+        player.rate = requestedPlaybackRate
+        mediaSessionBridge?.playbackDidChange()
+    }
+
+    func mediaSessionPause() {
         player.pause()
-        player.replaceCurrentItem(with: nil)
+        mediaSessionBridge?.playbackDidChange()
+    }
+
+    func mediaSessionStop() {
+        player.pause()
+        player.seek(to: .zero)
+        mediaSessionBridge?.playbackDidChange()
+    }
+
+    func mediaSessionSeek(to seconds: Double) {
+        player.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600))
+        mediaSessionBridge?.playbackDidChange()
+    }
+
+    func mediaSessionSetDucked(_ ducked: Bool) {
+        isDucked = ducked
+        applyEffectiveVolume()
+    }
+
+    func mediaSessionEmitNextRequested() {
+        emitEvent(eventType: CWaterUI.WuiVideoEventType_NextRequested)
+    }
+
+    func mediaSessionEmitPreviousRequested() {
+        emitEvent(eventType: CWaterUI.WuiVideoEventType_PreviousRequested)
     }
 }

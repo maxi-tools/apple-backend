@@ -277,6 +277,7 @@ private func registerBuiltinComponentsIfNeeded() {
     registerMetadataComponent(WuiShadow.self)
     registerMetadataComponent(WuiBorder.self)
     registerMetadataComponent(WuiClipShape.self)
+    registerMetadataComponent(WuiOpacity.self)
     registerMetadataComponent(WuiScale.self)
     registerMetadataComponent(WuiRotation.self)
     registerMetadataComponent(WuiOffset.self)

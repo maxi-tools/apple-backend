@@ -82,7 +82,11 @@ final class WuiTable: PlatformView, WuiComponent {
 
     private func parseColumn(_ ffiCol: CWaterUI.WuiTableColumn) -> TableColumnData {
         // Parse label (WuiText)
-        let labelView = WuiText(content: WuiComputed<WuiStyledStr>(ffiCol.label.content), env: env)
+        let labelView = WuiText(
+            content: WuiComputed<WuiStyledStr>(ffiCol.label.content),
+            paragraphAlignment: WuiComputed<WuiHorizontalAlignment>(ffiCol.label.paragraph_alignment),
+            env: env
+        )
 
         // Parse rows (WuiAnyViews containing Text views)
         var rows: [WuiAnyView] = []

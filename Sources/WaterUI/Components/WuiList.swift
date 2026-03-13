@@ -152,6 +152,11 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
         updateFromRust(ids: ids, animated: animated)
     }
 
+    private func applyRustUpdate(ids: [Int32], metadata: WuiWatcherMetadata) {
+        let animated = metadata.animation != nil
+        updateFromRust(ids: ids, animated: animated)
+    }
+
     private func updateFromRust(ids: [Int32], animated: Bool) {
         let count = Int(waterui_anyviews_len(contents.ptr))
         precondition(count == ids.count, "List ids count mismatch: anyviews_len=\(count) ids=\(ids.count)")

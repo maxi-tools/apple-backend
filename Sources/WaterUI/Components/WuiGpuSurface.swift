@@ -468,6 +468,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
     private var currentScaleFactor: CGFloat = 1.0
     private var configuredDynamicRangeMode: WuiDynamicRangeMode?
     private let surfaceDynamicRangePreference: WuiDynamicRangeMode
+    private var pictureInPictureHostBridge: WuiWaterKitVideoPictureInPictureHostBridge?
 
     /// Gesture tracking state
     private var gestureStartScale: CGFloat = 1.0
@@ -479,12 +480,25 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let stretchAxis = WuiStretchAxis(waterui_view_stretch_axis(anyview))
         let ffiSurface = waterui_force_as_gpu_surface(anyview)
-        self.init(stretchAxis: stretchAxis, ffiSurface: ffiSurface, envPtr: env.inner)
+        let pictureInPictureHostId = ffiSurface.has_picture_in_picture_host_id
+            ? ffiSurface.picture_in_picture_host_id
+            : nil
+        self.init(
+            stretchAxis: stretchAxis,
+            ffiSurface: ffiSurface,
+            pictureInPictureHostId: pictureInPictureHostId,
+            envPtr: env.inner
+        )
     }
 
     // MARK: - Designated Init
 
-		    init(stretchAxis: WuiStretchAxis, ffiSurface: CWaterUI.WuiGpuSurface, envPtr: OpaquePointer) {
+		    init(
+                stretchAxis: WuiStretchAxis,
+                ffiSurface: CWaterUI.WuiGpuSurface,
+                pictureInPictureHostId: UInt64?,
+                envPtr: OpaquePointer
+            ) {
 		        self.stretchAxis = stretchAxis
 		        let renderState = WuiGpuSurfaceRenderState(ffiSurface: ffiSurface, envPtr: envPtr)
 		        self.renderState = renderState
@@ -495,6 +509,12 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
 	        setupMetalLayer()
 	        setupPointerTracking()
 	        setupLifecycleObservers()
+            if let pictureInPictureHostId {
+                pictureInPictureHostBridge = WuiWaterKitVideoPictureInPictureHostBridge(
+                    hostId: pictureInPictureHostId,
+                    surface: self
+                )
+            }
 	    }
 
 	    private func setupLifecycleObservers() {
@@ -1377,6 +1397,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
 	    // MARK: - Cleanup
 
 	    @MainActor deinit {
+            pictureInPictureHostBridge = nil
 	        stopDisplayLink()
 	        #if canImport(UIKit)
 	            let center = NotificationCenter.default
