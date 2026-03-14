@@ -66,6 +66,10 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
     private let picker = UIDatePicker()
     private let toggleButton = UIButton(type: .system)
     private let selectionList = UIStackView()
+    private var calendarView: UICalendarView?
+    private var calendarSelection: UICalendarSelectionMultiDate?
+    private var calendarDelegate: UIKitMultiDateCoordinator?
+    private var isSyncingCalendarSelection = false
     #elseif canImport(AppKit)
     private let picker = NSDatePicker()
     private let toggleButton = NSButton(title: "", target: nil, action: nil)
@@ -118,17 +122,37 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
 
     private func configureSubviews() {
         #if canImport(UIKit)
-        let root = UIStackView(arrangedSubviews: [labelView, picker, toggleButton, selectionList])
+        let root = UIStackView(arrangedSubviews: [labelView])
         root.axis = .vertical
         root.spacing = 8
         root.translatesAutoresizingMaskIntoConstraints = false
-        selectionList.axis = .vertical
-        selectionList.spacing = 4
-        picker.datePickerMode = .date
-        picker.minimumDate = toDate(range.start)
-        picker.maximumDate = toDate(range.end)
-        picker.addTarget(self, action: #selector(toggleCurrentDate), for: .valueChanged)
-        toggleButton.addTarget(self, action: #selector(toggleCurrentDate), for: .touchUpInside)
+        if #available(iOS 16.0, *) {
+            let calendarView = UICalendarView()
+            calendarView.availableDateRange = DateInterval(
+                start: toDate(range.start),
+                end: toDate(range.end)
+            )
+            let coordinator = UIKitMultiDateCoordinator(owner: self)
+            calendarView.delegate = coordinator
+            let selection = UICalendarSelectionMultiDate(delegate: coordinator)
+            calendarView.selectionBehavior = selection
+            self.calendarView = calendarView
+            self.calendarSelection = selection
+            self.calendarDelegate = coordinator
+            root.addArrangedSubview(calendarView)
+        } else {
+            selectionList.axis = .vertical
+            selectionList.spacing = 4
+            picker.datePickerMode = .date
+            picker.minimumDate = toDate(range.start)
+            picker.maximumDate = toDate(range.end)
+            picker.preferredDatePickerStyle = .inline
+            picker.addTarget(self, action: #selector(toggleCurrentDate), for: .valueChanged)
+            toggleButton.addTarget(self, action: #selector(toggleCurrentDate), for: .touchUpInside)
+            root.addArrangedSubview(picker)
+            root.addArrangedSubview(toggleButton)
+            root.addArrangedSubview(selectionList)
+        }
         addSubview(root)
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -182,16 +206,28 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
         let decorated = decoratedDates()
         let current = selected.first ?? range.start
         #if canImport(UIKit)
-        picker.date = toDate(current)
-        toggleButton.setTitle(buttonTitle(for: current, selected: selected), for: .normal)
-        selectionList.arrangedSubviews.forEach { view in
-            selectionList.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-        for date in selected {
-            let label = UILabel()
-            label.text = formatted(date, decorated: decorated.contains(dateKey(date)))
-            selectionList.addArrangedSubview(label)
+        if #available(iOS 16.0, *), let calendarView, let selectionBehavior = calendarSelection {
+            let selectedComponents = selected.map(dateComponents)
+            isSyncingCalendarSelection = true
+            selectionBehavior.selectedDates = selectedComponents
+            calendarView.reloadDecorations(forDateComponents: selectedComponents, animated: false)
+            calendarView.reloadDecorations(
+                forDateComponents: Array(decorated.map(dateComponents)),
+                animated: false
+            )
+            isSyncingCalendarSelection = false
+        } else {
+            picker.date = toDate(current)
+            toggleButton.setTitle(buttonTitle(for: current, selected: selected), for: .normal)
+            selectionList.arrangedSubviews.forEach { view in
+                selectionList.removeArrangedSubview(view)
+                view.removeFromSuperview()
+            }
+            for date in selected {
+                let label = UILabel()
+                label.text = formatted(date, decorated: decorated.contains(dateKey(date)))
+                selectionList.addArrangedSubview(label)
+            }
         }
         #elseif canImport(AppKit)
         picker.dateValue = toDate(current)
@@ -209,6 +245,10 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
 
     @objc private func toggleCurrentDate() {
         let current = currentDate()
+        applySelectionToggle(current)
+    }
+
+    private func applySelectionToggle(_ current: CWaterUI.WuiDate) {
         var selected = selectedDates()
         if let index = selected.firstIndex(where: { dateKey($0) == dateKey(current) }) {
             selected.remove(at: index)
@@ -244,6 +284,48 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
         "\(date.year)-\(date.month)-\(date.day)"
     }
 
+    #if canImport(UIKit)
+    private func dateComponents(_ date: CWaterUI.WuiDate) -> DateComponents {
+        DateComponents(year: Int(date.year), month: Int(date.month), day: Int(date.day))
+    }
+
+    @available(iOS 16.0, *)
+    fileprivate func canToggle(_ components: DateComponents) -> Bool {
+        guard let date = dateFromComponents(components) else {
+            return false
+        }
+        return date >= range.start && date <= range.end
+    }
+
+    @available(iOS 16.0, *)
+    fileprivate func toggleFromCalendar(_ components: DateComponents) {
+        guard !isSyncingCalendarSelection, let date = dateFromComponents(components) else {
+            return
+        }
+        applySelectionToggle(date)
+    }
+
+    @available(iOS 16.0, *)
+    fileprivate func decoration(for components: DateComponents) -> UICalendarView.Decoration? {
+        guard let date = dateFromComponents(components),
+              decoratedDates().contains(dateKey(date))
+        else {
+            return nil
+        }
+        return .default(color: .secondaryLabel, size: .small)
+    }
+    #endif
+
+    private func dateFromComponents(_ components: DateComponents) -> CWaterUI.WuiDate? {
+        guard let year = components.year,
+              let month = components.month,
+              let day = components.day
+        else {
+            return nil
+        }
+        return CWaterUI.WuiDate(year: Int32(year), month: UInt8(month), day: UInt8(day))
+    }
+
     private func toDate(_ date: CWaterUI.WuiDate) -> Date {
         var components = DateComponents()
         components.year = Int(date.year)
@@ -260,6 +342,37 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
         #endif
     }
 }
+
+#if canImport(UIKit)
+@available(iOS 16.0, *)
+private final class UIKitMultiDateCoordinator: NSObject, UICalendarSelectionMultiDateDelegate, UICalendarViewDelegate {
+    private unowned let owner: WuiMultiDatePicker
+
+    init(owner: WuiMultiDatePicker) {
+        self.owner = owner
+    }
+
+    func multiDateSelection(_ selection: UICalendarSelectionMultiDate, canSelectDate dateComponents: DateComponents) -> Bool {
+        owner.canToggle(dateComponents)
+    }
+
+    func multiDateSelection(_ selection: UICalendarSelectionMultiDate, canDeselectDate dateComponents: DateComponents) -> Bool {
+        owner.canToggle(dateComponents)
+    }
+
+    func multiDateSelection(_ selection: UICalendarSelectionMultiDate, didSelectDate dateComponents: DateComponents) {
+        owner.toggleFromCalendar(dateComponents)
+    }
+
+    func multiDateSelection(_ selection: UICalendarSelectionMultiDate, didDeselectDate dateComponents: DateComponents) {
+        owner.toggleFromCalendar(dateComponents)
+    }
+
+    func calendarView(_ calendarView: UICalendarView, decorationFor dateComponents: DateComponents) -> UICalendarView.Decoration? {
+        owner.decoration(for: dateComponents)
+    }
+}
+#endif
 
 @MainActor
 private func makeDateArrayBinding(_ inner: OpaquePointer) -> WuiBinding<CWaterUI.WuiArray> {
