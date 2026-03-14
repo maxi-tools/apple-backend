@@ -32,6 +32,7 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
 
     private var wuiLayout: WuiLayout
     private var childViews: [WuiAnyView]
+    private var cachedSubViews: CachedSubViewArray?
     private let bridge = NativeLayoutBridge()
 
     // MARK: - WuiComponent Init
@@ -69,14 +70,10 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
     }
 
     func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions {
-        let proxies = bridge.createSubViewProxies(children: childViews) { child, childProposal in
-            child.measure(childProposal)
-        }
-
         return bridge.containerMeasure(
             layout: wuiLayout,
             parentProposal: proposal,
-            children: proxies
+            children: subViewCache()
         )
     }
 
@@ -120,21 +117,17 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
         // This ensures VStack centering works correctly - children know the real container width
         let boundsProposal = WuiProposalSize(width: Float(bounds.width), height: Float(bounds.height))
 
-        let proxies = bridge.createSubViewProxies(children: childViews) { child, childProposal in
-            child.measure(childProposal)
-        }
-
         // Measure with bounds-based proposal first - this ensures children know available width
         _ = bridge.containerSize(
             layout: wuiLayout,
             parentProposal: boundsProposal,
-            children: proxies
+            children: subViewCache()
         )
 
         let rects = bridge.placements(
             layout: wuiLayout,
             bounds: bounds,
-            children: proxies
+            children: subViewCache()
         )
 
         for (index, rect) in rects.enumerated() {
@@ -165,6 +158,7 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
         }
 
         childViews = newChildren
+        cachedSubViews = nil
         for child in newChildren {
             child.translatesAutoresizingMaskIntoConstraints = true
             addSubview(child)
@@ -173,7 +167,19 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
         #if canImport(UIKit)
         setNeedsLayout()
         #elseif canImport(AppKit)
-        needsLayout = true
+            needsLayout = true
         #endif
+    }
+
+    private func subViewCache() -> CachedSubViewArray {
+        if let cachedSubViews {
+            return cachedSubViews
+        }
+
+        let cache = bridge.createCachedSubViewArray(children: childViews) { child, childProposal in
+            child.measure(childProposal)
+        }
+        cachedSubViews = cache
+        return cache
     }
 }

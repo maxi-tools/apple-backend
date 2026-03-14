@@ -89,6 +89,18 @@ final class WuiRawArray {
         return Array(buffer)
     }
 
+    func withUnsafeBufferPointer<T, R>(_ body: (UnsafeBufferPointer<T>) -> R) -> R {
+        let slice = (inner!.vtable.slice)(inner!.data)
+        let len = Int(slice.len)
+        guard len > 0, let head = slice.head else {
+            return body(UnsafeBufferPointer(start: nil, count: 0))
+        }
+
+        let typedHead = head.assumingMemoryBound(to: T.self)
+        let buffer = UnsafeBufferPointer<T>(start: typedHead, count: len)
+        return body(buffer)
+    }
+
     @MainActor deinit {
         if let inner = inner {
             inner.vtable.drop(inner.data)
@@ -117,6 +129,10 @@ struct WuiArray<T> {
 
     func toArray() -> [T] {
         self.inner.toArray()
+    }
+
+    func withUnsafeBufferPointer<R>(_ body: (UnsafeBufferPointer<T>) -> R) -> R {
+        self.inner.withUnsafeBufferPointer(body)
     }
 }
 
@@ -183,11 +199,9 @@ struct WuiStr {
     }
 
     func toString() -> String {
-        let bytes = inner.toArray()
-        if let string = String(bytes: bytes, encoding: .utf8) {
-            return string
+        inner.withUnsafeBufferPointer { bytes in
+            String(decoding: bytes, as: UTF8.self)
         }
-        return String(decoding: bytes, as: UTF8.self)
     }
 
     func intoInner() -> CWaterUI.WuiStr {

@@ -37,6 +37,10 @@ final class WuiAnyViews {
         return array.map(\.inner)
     }
 
+    func allIds() -> [Int32] {
+        getIds(start: 0, end: count)
+    }
+
     /// Returns a WuiAnyView which is already a UIView/NSView.
     func getView(at index: Int, env: WuiEnvironment) -> WuiAnyView {
         let ptr = waterui_anyviews_get_view(inner, UInt(index))
@@ -80,4 +84,12 @@ func watchAnyViewsRangeIds(
         fatalError("Failed to watch anyviews range")
     }
     return WatcherGuard(guardPtr)
+}
+
+@MainActor
+func watchAnyViewsIds(
+    _ anyViews: WuiAnyViews,
+    _ f: @escaping ([Int32], WuiWatcherMetadata) -> Void
+) -> WatcherGuard {
+    watchAnyViewsRangeIds(anyViews, start: 0, end: .max, f)
 }

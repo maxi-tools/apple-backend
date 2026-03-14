@@ -31,7 +31,9 @@ final class WuiContainer: PlatformView, WuiComponent {
 
     private var wuiLayout: WuiLayout
     private var anyViews: WuiAnyViews  // Stored for lazy access & view ID lookup
+    private var contentsWatcher: WatcherGuard?
     private var childViews: [WuiAnyView] = []  // Currently loaded views
+    private var cachedSubViews: CachedSubViewArray?
     private let bridge = NativeLayoutBridge()
     private let env: WuiEnvironment
 
@@ -55,8 +57,8 @@ final class WuiContainer: PlatformView, WuiComponent {
         self.env = env
         super.init(frame: .zero)
 
-        // Currently load all children eagerly (can be changed to lazy later)
-        loadAllChildren()
+        reloadChildrenFromRust()
+        installContentsWatch()
     }
 
     @available(*, unavailable)
@@ -66,14 +68,26 @@ final class WuiContainer: PlatformView, WuiComponent {
 
     // MARK: - Child Loading
 
-    private func loadAllChildren() {
+    private func installContentsWatch() {
+        contentsWatcher = watchAnyViewsIds(anyViews) { [weak self] ids, metadata in
+            guard let self else { return }
+            withPlatformAnimation(metadata) {
+                self.syncChildren(ids: ids)
+            }
+        }
+    }
+
+    private func reloadChildrenFromRust() {
+        syncChildren(ids: anyViews.allIds())
+    }
+
+    private func syncChildren(ids: [Int32]) {
         var children: [WuiAnyView] = []
-        children.reserveCapacity(anyViews.count)
+        children.reserveCapacity(ids.count)
         var seenIds = Set<Int32>()
-        for i in 0 ..< anyViews.count {
-            let id = getViewId(at: i).inner
+        for (index, id) in ids.enumerated() {
             precondition(seenIds.insert(id).inserted, "Duplicate child view id in WuiContainer: \(id)")
-            let child = anyViews.getView(at: i, env: env)
+            let child = anyViews.getView(at: index, env: env)
             child.translatesAutoresizingMaskIntoConstraints = true
             children.append(child)
         }
@@ -93,14 +107,10 @@ final class WuiContainer: PlatformView, WuiComponent {
     }
 
     func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions {
-        let proxies = bridge.createSubViewProxies(children: childViews) { child, childProposal in
-            child.measure(childProposal)
-        }
-
         return bridge.containerMeasure(
             layout: wuiLayout,
             parentProposal: proposal,
-            children: proxies
+            children: subViewCache()
         )
     }
 
@@ -145,21 +155,17 @@ final class WuiContainer: PlatformView, WuiComponent {
         let boundsProposal = WuiProposalSize(
             width: Float(bounds.width), height: Float(bounds.height))
 
-        let proxies = bridge.createSubViewProxies(children: childViews) { child, childProposal in
-            child.measure(childProposal)
-        }
-
         // Measure with bounds-based proposal first - this ensures children know available width
         _ = bridge.containerSize(
             layout: wuiLayout,
             parentProposal: boundsProposal,
-            children: proxies
+            children: subViewCache()
         )
 
         let rects = bridge.placements(
             layout: wuiLayout,
             bounds: bounds,
-            children: proxies
+            children: subViewCache()
         )
 
         for (index, rect) in rects.enumerated() {
@@ -191,6 +197,7 @@ final class WuiContainer: PlatformView, WuiComponent {
         }
 
         childViews = newChildren
+        cachedSubViews = nil
         for child in newChildren {
             child.translatesAutoresizingMaskIntoConstraints = true
             addSubview(child)
@@ -201,5 +208,17 @@ final class WuiContainer: PlatformView, WuiComponent {
         #elseif canImport(AppKit)
             needsLayout = true
         #endif
+    }
+
+    private func subViewCache() -> CachedSubViewArray {
+        if let cachedSubViews {
+            return cachedSubViews
+        }
+
+        let cache = bridge.createCachedSubViewArray(children: childViews) { child, childProposal in
+            child.measure(childProposal)
+        }
+        cachedSubViews = cache
+        return cache
     }
 }

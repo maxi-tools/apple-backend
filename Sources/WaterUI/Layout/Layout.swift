@@ -220,24 +220,18 @@ final class WuiLayout {
         waterui_drop_layout(inner)
     }
 
-    private func subviewArray(_ children: [SubViewProxy]) -> CWaterUI.WuiArray_WuiSubView {
-        let subviews = children.map { $0.toWuiSubView() }
-        let array = WuiArray(array: subviews)
-        return unsafeBitCast(array.inner.intoInner(), to: CWaterUI.WuiArray_WuiSubView.self)
-    }
-
     func measure(
         proposal: WuiProposalSize,
-        children: [SubViewProxy]
+        children: CachedSubViewArray
     ) -> WuiViewDimensions {
-        let dimensions = waterui_layout_measure(inner, proposal.toCStruct(), subviewArray(children))
+        let dimensions = waterui_layout_measure(inner, proposal.toCStruct(), children.ffiArray)
         return WuiViewDimensions(dimensions)
     }
 
     /// Calculate the size this layout wants given a proposal.
     func sizeThatFits(
         proposal: WuiProposalSize,
-        children: [SubViewProxy]
+        children: CachedSubViewArray
     ) -> CGSize {
         measure(proposal: proposal, children: children).cgSize
     }
@@ -246,10 +240,10 @@ final class WuiLayout {
     /// Returns a rect for each child specifying its position and size.
     func place(
         bounds: CGRect,
-        children: [SubViewProxy]
+        children: CachedSubViewArray
     ) -> [CGRect] {
         let boundsRaw = WuiRect(bounds).toCStruct()
-        let rects = waterui_layout_place(inner, boundsRaw, subviewArray(children))
+        let rects = waterui_layout_place(inner, boundsRaw, children.ffiArray)
         let rawArray = unsafeBitCast(rects, to: CWaterUI.WuiArray.self)
         let bridged = WuiArray<CWaterUI.WuiRect>(c: rawArray)
         return bridged.toArray().map { WuiRect($0).cgRect }
@@ -257,6 +251,42 @@ final class WuiLayout {
 }
 
 // MARK: - SubView Proxy
+
+@MainActor
+final class CachedSubViewArray {
+    private static let vtable = CWaterUI.WuiArrayVTable(
+        drop: { _ in },
+        slice: { data in
+            guard let data else {
+                return WuiArraySlice(head: nil, len: 0)
+            }
+
+            let cache = Unmanaged<CachedSubViewArray>.fromOpaque(data).takeUnretainedValue()
+            return WuiArraySlice(head: cache.baseAddress, len: UInt(cache.subviews.count))
+        }
+    )
+
+    private let proxies: [SubViewProxy]
+    private let subviews: ContiguousArray<CWaterUI.WuiSubView>
+    private let baseAddress: UnsafeMutableRawPointer?
+
+    init(_ proxies: [SubViewProxy]) {
+        self.proxies = proxies
+        let subviews = ContiguousArray(proxies.map { $0.toBorrowedWuiSubView() })
+        self.baseAddress = subviews.withUnsafeBufferPointer { buffer in
+            UnsafeMutableRawPointer(mutating: buffer.baseAddress)
+        }
+        self.subviews = subviews
+    }
+
+    var ffiArray: CWaterUI.WuiArray_WuiSubView {
+        let raw = CWaterUI.WuiArray(
+            data: Unmanaged.passUnretained(self).toOpaque(),
+            vtable: Self.vtable
+        )
+        return unsafeBitCast(raw, to: CWaterUI.WuiArray_WuiSubView.self)
+    }
+}
 
 /// A proxy for child views that provides measurement via callback.
 /// This mirrors Rust's SubView trait.
@@ -279,9 +309,7 @@ final class SubViewProxy {
         self.priority = priority
     }
 
-    func toWuiSubView() -> CWaterUI.WuiSubView {
-        let context = Unmanaged.passRetained(self).toOpaque()
-
+    func toBorrowedWuiSubView() -> CWaterUI.WuiSubView {
         let vtable = CWaterUI.WuiSubViewVTable(
             measure: { contextPtr, proposal in
                 guard let contextPtr = contextPtr else {
@@ -291,14 +319,11 @@ final class SubViewProxy {
                 let swiftProposal = WuiProposalSize(proposal)
                 return proxy.measure(swiftProposal).toCStruct()
             },
-            drop: { contextPtr in
-                guard let contextPtr = contextPtr else { return }
-                Unmanaged<SubViewProxy>.fromOpaque(contextPtr).release()
-            }
+            drop: { _ in }
         )
 
         return CWaterUI.WuiSubView(
-            context: context,
+            context: Unmanaged.passUnretained(self).toOpaque(),
             vtable: vtable,
             stretch_axis: stretchAxis.ffiValue,
             priority: priority

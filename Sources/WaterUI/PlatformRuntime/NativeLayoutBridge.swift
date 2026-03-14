@@ -4,13 +4,13 @@ import CoreGraphics
 /// Uses the SubView callback protocol - Rust calls back to Swift to measure children.
 @MainActor
 struct NativeLayoutBridge {
-    /// Creates SubViewProxy instances for each child view.
+    /// Creates a cached SubView array for repeated Rust layout calls.
     /// The measure closure will be called by Rust during layout.
-    func createSubViewProxies<V: WuiComponent>(
+    func createCachedSubViewArray<V: WuiComponent>(
         children: [V],
         measureChild: @escaping (V, WuiProposalSize) -> WuiViewDimensions
-    ) -> [SubViewProxy] {
-        children.map { child in
+    ) -> CachedSubViewArray {
+        let proxies = children.map { child in
             SubViewProxy(
                 stretchAxis: child.stretchAxis,
                 priority: child.layoutPriority()
@@ -18,13 +18,14 @@ struct NativeLayoutBridge {
                 measureChild(child, proposal)
             }
         }
+        return CachedSubViewArray(proxies)
     }
 
     /// Calculate the full measurement packet for a container.
     func containerMeasure(
         layout: WuiLayout,
         parentProposal: WuiProposalSize,
-        children: [SubViewProxy]
+        children: CachedSubViewArray
     ) -> WuiViewDimensions {
         layout.measure(proposal: parentProposal, children: children)
     }
@@ -33,7 +34,7 @@ struct NativeLayoutBridge {
     func containerSize(
         layout: WuiLayout,
         parentProposal: WuiProposalSize,
-        children: [SubViewProxy]
+        children: CachedSubViewArray
     ) -> CGSize {
         containerMeasure(layout: layout, parentProposal: parentProposal, children: children).cgSize
     }
@@ -43,7 +44,7 @@ struct NativeLayoutBridge {
     func placements(
         layout: WuiLayout,
         bounds: CGRect,
-        children: [SubViewProxy]
+        children: CachedSubViewArray
     ) -> [CGRect] {
         layout.place(bounds: bounds, children: children)
     }
