@@ -243,6 +243,7 @@ extension WuiBinding where T == CWaterUI.WuiDateTime {
     }
 }
 
+
 // WuiColor is an opaque pointer type
 extension WuiBinding where T == OpaquePointer {
     /// Creates a binding for Color (opaque WuiColor pointer)

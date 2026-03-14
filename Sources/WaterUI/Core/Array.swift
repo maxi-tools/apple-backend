@@ -141,6 +141,7 @@ extension WuiArray where T == CWaterUI.WuiId {
     }
 }
 
+
 extension WuiArray<OpaquePointer> {
     init(_ inner: CWaterUI.WuiArray_____WuiAnyView) {
         let raw = unsafeBitCast(inner, to: CWaterUI.WuiArray.self)

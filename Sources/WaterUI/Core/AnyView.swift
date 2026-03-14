@@ -248,6 +248,7 @@ private func registerBuiltinComponentsIfNeeded() {
     registerComponent(WuiSecureField.self)
     registerComponent(WuiStepper.self)
     registerComponent(WuiDatePicker.self)
+    registerComponent(WuiMultiDatePicker.self)
     registerComponent(WuiColorPicker.self)
     registerComponent(WuiPicker.self)
     registerComponent(WuiProgress.self)
@@ -259,7 +260,6 @@ private func registerBuiltinComponentsIfNeeded() {
     registerComponent(WuiScroll.self)
     registerComponent(WuiList.self)
     registerComponent(WuiTable.self)
-    // TODO: registerComponent(WuiNavigationView.self)
 
     // Dynamic components
     registerComponent(WuiDynamic.self)
