@@ -108,55 +108,41 @@ struct WuiRect {
     }
 }
 
-public struct WuiAlignmentKeyId: Hashable {
-    let low: UInt64
-    let high: UInt64
-
-    init(_ raw: CWaterUI.WuiTypeId) {
-        self.low = raw.low
-        self.high = raw.high
-    }
-
-    func toCStruct() -> CWaterUI.WuiTypeId {
-        CWaterUI.WuiTypeId(low: low, high: high)
-    }
-}
-
 public struct WuiHorizontalGuide {
-    var alignment: WuiAlignmentKeyId
+    var alignment: CWaterUI.WuiHorizontalAlignment
     var value: Float
 
-    init(alignment: WuiAlignmentKeyId, value: Float) {
+    init(alignment: CWaterUI.WuiHorizontalAlignment, value: Float) {
         self.alignment = alignment
         self.value = value
     }
 
     init(_ raw: CWaterUI.WuiHorizontalGuide) {
-        self.alignment = WuiAlignmentKeyId(raw.alignment)
+        self.alignment = raw.alignment
         self.value = raw.value
     }
 
     func toCStruct() -> CWaterUI.WuiHorizontalGuide {
-        CWaterUI.WuiHorizontalGuide(alignment: alignment.toCStruct(), value: value)
+        CWaterUI.WuiHorizontalGuide(alignment: alignment, value: value)
     }
 }
 
 public struct WuiVerticalGuide {
-    var alignment: WuiAlignmentKeyId
+    var alignment: CWaterUI.WuiVerticalAlignment
     var value: Float
 
-    init(alignment: WuiAlignmentKeyId, value: Float) {
+    init(alignment: CWaterUI.WuiVerticalAlignment, value: Float) {
         self.alignment = alignment
         self.value = value
     }
 
     init(_ raw: CWaterUI.WuiVerticalGuide) {
-        self.alignment = WuiAlignmentKeyId(raw.alignment)
+        self.alignment = raw.alignment
         self.value = raw.value
     }
 
     func toCStruct() -> CWaterUI.WuiVerticalGuide {
-        CWaterUI.WuiVerticalGuide(alignment: alignment.toCStruct(), value: value)
+        CWaterUI.WuiVerticalGuide(alignment: alignment, value: value)
     }
 }
 

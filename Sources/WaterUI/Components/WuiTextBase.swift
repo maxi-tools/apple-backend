@@ -145,7 +145,7 @@ class WuiTextBase: PlatformView {
         if let firstBaseline = measurement.firstBaseline {
             verticalGuides.append(
                 WuiVerticalGuide(
-                    alignment: WuiAlignmentKeyId(waterui_vertical_alignment_first_baseline_id()),
+                    alignment: WuiVerticalAlignment_FirstBaseline,
                     value: Float(firstBaseline)
                 )
             )
@@ -153,7 +153,7 @@ class WuiTextBase: PlatformView {
         if let lastBaseline = measurement.lastBaseline {
             verticalGuides.append(
                 WuiVerticalGuide(
-                    alignment: WuiAlignmentKeyId(waterui_vertical_alignment_last_baseline_id()),
+                    alignment: WuiVerticalAlignment_LastBaseline,
                     value: Float(lastBaseline)
                 )
             )
