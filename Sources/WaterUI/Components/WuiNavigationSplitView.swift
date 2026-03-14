@@ -6,6 +6,26 @@ import UIKit
 import AppKit
 #endif
 
+private struct WuiNavigationSplitLayoutFFI {
+    var sidebar: OpaquePointer?
+    var placeholder: OpaquePointer?
+    var selection: OpaquePointer?
+    var detail: OpaquePointer?
+    var sidebar_width: Float
+}
+
+@_silgen_name("waterui_split_navigation_container_id")
+private func waterui_split_navigation_container_id() -> CWaterUI.WuiTypeId
+@_silgen_name("waterui_force_as_split_navigation_container")
+private func waterui_force_as_split_navigation_container(_ view: OpaquePointer) -> WuiNavigationSplitLayoutFFI
+@_silgen_name("waterui_split_navigation_detail_content")
+private func waterui_split_navigation_detail_content(
+    _ detail: OpaquePointer?,
+    _ selected: CWaterUI.WuiId
+) -> CWaterUI.WuiNavigationView
+@_silgen_name("waterui_drop_split_navigation_detail")
+private func waterui_drop_split_navigation_detail(_ detail: OpaquePointer?)
+
 @MainActor
 final class WuiNavigationSplitView: PlatformView, WuiComponent {
     static var rawId: CWaterUI.WuiTypeId { waterui_split_navigation_container_id() }
@@ -14,50 +34,41 @@ final class WuiNavigationSplitView: PlatformView, WuiComponent {
 
     private let sidebarView: WuiAnyView
     private let placeholderView: WuiAnyView
-    private let detailView: WuiNavigationView?
+    private let selectionBinding: WuiBinding<Int32>
+    private let detailHandleBits: UInt
+    private let env: WuiEnvironment
     private let sidebarWidth: CGFloat
-    private let clearSelection: Action
+    private var detailView: WuiNavigationView?
+    private var selectionWatcher: WatcherGuard?
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let ffiSplit = waterui_force_as_split_navigation_container(anyview)
-        guard let clearSelectionPtr = ffiSplit.clear_selection else {
-            fatalError("NavigationSplitLayout clear_selection action pointer is null")
+        let sidebarView = WuiAnyView(anyview: ffiSplit.sidebar!, env: env)
+        let placeholderView = WuiAnyView(anyview: ffiSplit.placeholder!, env: env)
+        guard let selectionPtr = ffiSplit.selection else {
+            fatalError("NavigationSplitLayout selection binding pointer is null")
         }
-
-        let sidebarView = WuiAnyView(anyview: ffiSplit.sidebar, env: env)
-        let placeholderView = WuiAnyView(anyview: ffiSplit.placeholder, env: env)
-
-        let detailView: WuiNavigationView?
-        if ffiSplit.has_detail {
-            guard let detailContent = ffiSplit.detail_content else {
-                fatalError("NavigationSplitLayout detail_content pointer is null while has_detail is true")
-            }
-            detailView = WuiNavigationView(
-                ffiNav: CWaterUI.WuiNavigationView(
-                    bar: ffiSplit.detail_bar,
-                    content: detailContent
-                ),
-                env: env
-            )
-        } else {
-            detailView = nil
+        guard let detailPtr = ffiSplit.detail else {
+            fatalError("NavigationSplitLayout detail resolver pointer is null")
         }
 
         self.init(
             sidebarView: sidebarView,
             placeholderView: placeholderView,
-            detailView: detailView,
+            selectionBinding: WuiBinding<Int32>(selectionPtr),
+            detailHandle: detailPtr,
+            env: env,
             sidebarWidth: CGFloat(ffiSplit.sidebar_width),
-            clearSelection: Action(inner: clearSelectionPtr, env: env)
         )
     }
 
     init(
         sidebarView: WuiAnyView,
         placeholderView: WuiAnyView,
-        detailView: WuiNavigationView?,
+        selectionBinding: WuiBinding<Int32>,
+        detailHandle: OpaquePointer,
+        env: WuiEnvironment,
         sidebarWidth: CGFloat,
-        clearSelection: Action
     ) {
         guard sidebarWidth.isFinite, sidebarWidth > 0 else {
             fatalError("NavigationSplitLayout sidebar width must be finite and positive")
@@ -65,9 +76,10 @@ final class WuiNavigationSplitView: PlatformView, WuiComponent {
 
         self.sidebarView = sidebarView
         self.placeholderView = placeholderView
-        self.detailView = detailView
+        self.selectionBinding = selectionBinding
+        self.detailHandleBits = UInt(bitPattern: detailHandle)
+        self.env = env
         self.sidebarWidth = sidebarWidth
-        self.clearSelection = clearSelection
         super.init(frame: .zero)
 
         sidebarView.translatesAutoresizingMaskIntoConstraints = true
@@ -76,15 +88,24 @@ final class WuiNavigationSplitView: PlatformView, WuiComponent {
         placeholderView.translatesAutoresizingMaskIntoConstraints = true
         addSubview(placeholderView)
 
-        if let detailView {
-            detailView.translatesAutoresizingMaskIntoConstraints = true
-            addSubview(detailView)
+        syncDetailView()
+        selectionWatcher = selectionBinding.watch { [weak self] _, _ in
+            self?.syncDetailView()
+            #if canImport(UIKit)
+            self?.setNeedsLayout()
+            #elseif canImport(AppKit)
+            self?.needsLayout = true
+            #endif
         }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        waterui_drop_split_navigation_detail(OpaquePointer(bitPattern: detailHandleBits))
     }
 
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
@@ -119,7 +140,9 @@ final class WuiNavigationSplitView: PlatformView, WuiComponent {
             placeholderView.frame = .zero
 
             if let detailView {
-                detailView.setBackAction(clearSelection)
+                detailView.setBackAction(Action(callback: { [weak self] in
+                    self?.selectionBinding.set(0)
+                }))
                 detailView.isHidden = false
                 detailView.frame = bounds
             }
@@ -152,5 +175,24 @@ final class WuiNavigationSplitView: PlatformView, WuiComponent {
 
     private func compactThreshold() -> CGFloat {
         sidebarWidth + 360
+    }
+
+    private func syncDetailView() {
+        detailView?.removeFromSuperview()
+        detailView = nil
+
+        let selected = selectionBinding.value
+        if selected == 0 {
+            return
+        }
+
+        let nav = waterui_split_navigation_detail_content(
+            OpaquePointer(bitPattern: detailHandleBits),
+            CWaterUI.WuiId(inner: selected)
+        )
+        let view = WuiNavigationView(ffiNav: nav, env: env)
+        view.translatesAutoresizingMaskIntoConstraints = true
+        addSubview(view)
+        detailView = view
     }
 }

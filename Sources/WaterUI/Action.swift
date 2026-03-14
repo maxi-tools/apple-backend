@@ -13,19 +13,36 @@ import AppKit
 
 @MainActor
 class Action {
-    private var inner: OpaquePointer
-    private var env: WuiEnvironment
+    private var inner: OpaquePointer?
+    private var env: WuiEnvironment?
+    private let callback: (() -> Void)?
 
     init(inner: OpaquePointer, env: WuiEnvironment) {
         self.inner = inner
         self.env = env
+        self.callback = nil
+    }
+
+    init(callback: @escaping () -> Void) {
+        self.inner = nil
+        self.env = nil
+        self.callback = callback
     }
 
     func call() {
-        waterui_call_action(self.inner, env.inner)
+        if let callback {
+            callback()
+            return
+        }
+        guard let inner, let env else {
+            fatalError("Action requires either a local callback or valid FFI action pointer")
+        }
+        waterui_call_action(inner, env.inner)
     }
 
     @MainActor deinit {
-        waterui_drop_action(inner)
+        if let inner {
+            waterui_drop_action(inner)
+        }
     }
 }
