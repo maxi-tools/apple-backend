@@ -570,18 +570,17 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
                 guard let rawPtr = rawPtr else {
                     return WuiStr(string: "").intoInner()
                 }
-                let wrapper = Unmanaged<WebViewWrapper>.fromOpaque(rawPtr).takeUnretainedValue()
-
-                if Thread.isMainThread {
-                    wrapper.refreshCookieCache()
-                    return WuiStr(string: wrapper.cachedCookies).intoInner()
-                }
+                precondition(
+                    !Thread.isMainThread,
+                    "waterui_webview.get_cookies cannot synchronously fetch fresh cookies on the main thread"
+                )
 
                 let group = DispatchGroup()
-                var latest = wrapper.cachedCookies
-                group.enter()
-                DispatchQueue.main.async {
+                var latest = ""
+                DispatchQueue.main.sync {
+                    let wrapper = Unmanaged<WebViewWrapper>.fromOpaque(rawPtr).takeUnretainedValue()
                     let store = wrapper.webView.configuration.websiteDataStore.httpCookieStore
+                    group.enter()
                     store.getAllCookies { cookies in
                         let serialized = WebViewWrapper.serializeCookies(cookies)
                         wrapper.cachedCookies = serialized
@@ -589,7 +588,10 @@ final class WebViewWrapper: NSObject, WKScriptMessageHandler {
                         group.leave()
                     }
                 }
-                _ = group.wait(timeout: .now() + .milliseconds(500))
+                precondition(
+                    group.wait(timeout: .now() + .seconds(5)) == .success,
+                    "waterui_webview.get_cookies timed out waiting for WKHTTPCookieStore"
+                )
                 return WuiStr(string: latest).intoInner()
             },
             run_javascript: { rawPtr, script, callback in
