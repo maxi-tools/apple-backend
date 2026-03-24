@@ -5,6 +5,28 @@ import UIKit
 import AppKit
 #endif
 
+enum LazyStackAxis: Int32 {
+    case unsupported = 0
+    case vertical = 1
+    case horizontal = 2
+}
+
+@_silgen_name("waterui_layout_lazy_stack_axis")
+private func waterui_layout_lazy_stack_axis_shim(_ layout: OpaquePointer) -> Int32
+
+@_silgen_name("waterui_layout_lazy_stack_spacing")
+private func waterui_layout_lazy_stack_spacing_shim(_ layout: OpaquePointer) -> Float
+
+@_silgen_name("waterui_layout_lazy_stack_horizontal_alignment")
+private func waterui_layout_lazy_stack_horizontal_alignment_shim(
+    _ layout: OpaquePointer
+) -> CWaterUI.WuiHorizontalAlignment
+
+@_silgen_name("waterui_layout_lazy_stack_vertical_alignment")
+private func waterui_layout_lazy_stack_vertical_alignment_shim(
+    _ layout: OpaquePointer
+) -> CWaterUI.WuiVerticalAlignment
+
 // MARK: - Proposal and Layout Types
 
 public struct WuiProposalSize {
@@ -233,6 +255,22 @@ final class WuiLayout {
         let rawArray = unsafeBitCast(rects, to: CWaterUI.WuiArray.self)
         let bridged = WuiArray<CWaterUI.WuiRect>(c: rawArray)
         return bridged.toArray().map { WuiRect($0).cgRect }
+    }
+
+    func lazyStackAxis() -> LazyStackAxis {
+        LazyStackAxis(rawValue: waterui_layout_lazy_stack_axis_shim(inner)) ?? .unsupported
+    }
+
+    func lazyStackSpacing() -> Float {
+        waterui_layout_lazy_stack_spacing_shim(inner)
+    }
+
+    func lazyStackHorizontalAlignment() -> CWaterUI.WuiHorizontalAlignment {
+        waterui_layout_lazy_stack_horizontal_alignment_shim(inner)
+    }
+
+    func lazyStackVerticalAlignment() -> CWaterUI.WuiVerticalAlignment {
+        waterui_layout_lazy_stack_vertical_alignment_shim(inner)
     }
 }
 

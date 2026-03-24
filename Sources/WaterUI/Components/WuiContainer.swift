@@ -1,16 +1,3 @@
-// WuiContainer.swift
-// Dynamic container layout component - children accessed via Views trait (supports future lazy loading)
-//
-// # Layout Behavior
-// Container delegates layout calculations to the Rust layout engine.
-// Size and placement are determined by the layout algorithm (VStack, HStack, etc.).
-// Children are accessed via WuiAnyViews for future lazy loading support.
-//
-// // INTERNAL: Layout Contract for Backend Implementers
-// // - stretchAxis: Depends on children and layout algorithm
-// // - sizeThatFits: Delegates to Rust layout engine
-// // - Priority: 0 (default)
-
 import CWaterUI
 import OSLog
 
@@ -20,9 +7,70 @@ import OSLog
     import AppKit
 #endif
 
-/// A native container that uses the Rust layout engine for child positioning.
-/// Container uses `WuiAnyViews` for dynamic child access, enabling future lazy loading.
-/// Similar to SwiftUI's ForEach - can access view IDs individually.
+private struct VisibleWindow {
+    let start: Int
+    let end: Int
+    let leadingOffset: CGFloat
+}
+
+@MainActor
+private struct LazyStackConfig {
+    enum Axis {
+        case vertical(horizontalAlignment: WuiHorizontalAlignment)
+        case horizontal(verticalAlignment: WuiVerticalAlignment)
+    }
+
+    let axis: Axis
+    let spacing: CGFloat
+
+    init?(layout: WuiLayout) {
+        switch layout.lazyStackAxis() {
+        case .vertical:
+            self.axis = .vertical(horizontalAlignment: layout.lazyStackHorizontalAlignment())
+        case .horizontal:
+            self.axis = .horizontal(verticalAlignment: layout.lazyStackVerticalAlignment())
+        default:
+            return nil
+        }
+        self.spacing = CGFloat(layout.lazyStackSpacing())
+    }
+}
+
+private func resolveVisibleWindow(
+    count: Int,
+    startOffset: CGFloat,
+    endOffset: CGFloat,
+    extentAt: (Int) -> CGFloat
+) -> VisibleWindow {
+    guard count > 0 else {
+        return VisibleWindow(start: 0, end: 0, leadingOffset: 0)
+    }
+
+    let clampedStart = max(startOffset, 0)
+    let clampedEnd = max(endOffset, clampedStart)
+    var index = 0
+    var offset: CGFloat = 0
+
+    while index < count {
+        let extent = extentAt(index)
+        if offset + extent > clampedStart {
+            break
+        }
+        offset += extent
+        index += 1
+    }
+
+    let start = min(index, count)
+    let leadingOffset = offset
+
+    while index < count && offset < clampedEnd {
+        offset += extentAt(index)
+        index += 1
+    }
+
+    return VisibleWindow(start: start, end: min(index, count), leadingOffset: leadingOffset)
+}
+
 @MainActor
 final class WuiContainer: PlatformView, WuiComponent {
     static var rawId: CWaterUI.WuiTypeId { waterui_layout_container_id() }
@@ -30,14 +78,25 @@ final class WuiContainer: PlatformView, WuiComponent {
     private(set) var stretchAxis: WuiStretchAxis
 
     private var wuiLayout: WuiLayout
-    private var anyViews: WuiAnyViews  // Stored for lazy access & view ID lookup
+    private var anyViews: WuiAnyViews
     private var contentsWatcher: WatcherGuard?
-    private var childViews: [WuiAnyView] = []  // Currently loaded views
+    private var childViews: [WuiAnyView] = []
     private var cachedSubViews: CachedSubViewArray?
     private let bridge = NativeLayoutBridge()
     private let env: WuiEnvironment
+    private let lazyStack: LazyStackConfig?
 
-    // MARK: - WuiComponent Init
+    private var itemIds: [Int32] = []
+    private var renderedChildren: [Int32: WuiAnyView] = [:]
+    private var measuredMainAxis: [Int32: CGFloat] = [:]
+    private var measuredCrossAxis: [Int32: CGFloat] = [:]
+    private var lastCrossConstraint: CGFloat = -1
+
+    #if canImport(UIKit)
+        private var scrollObservation: NSKeyValueObservation?
+    #elseif canImport(AppKit)
+        private var boundsObserver: NSObjectProtocol?
+    #endif
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let stretchAxis = WuiStretchAxis(waterui_view_stretch_axis(anyview))
@@ -47,14 +106,13 @@ final class WuiContainer: PlatformView, WuiComponent {
         self.init(stretchAxis: stretchAxis, layout: layout, anyViews: anyViews, env: env)
     }
 
-    // MARK: - Designated Init
-
     init(stretchAxis: WuiStretchAxis, layout: WuiLayout, anyViews: WuiAnyViews, env: WuiEnvironment)
     {
         self.stretchAxis = stretchAxis
         self.wuiLayout = layout
         self.anyViews = anyViews
         self.env = env
+        self.lazyStack = LazyStackConfig(layout: layout)
         super.init(frame: .zero)
 
         reloadChildrenFromRust()
@@ -66,19 +124,43 @@ final class WuiContainer: PlatformView, WuiComponent {
         fatalError("init(coder:) has not been implemented")
     }
 
-    // MARK: - Child Loading
-
     private func installContentsWatch() {
         contentsWatcher = watchAnyViewsIds(anyViews) { [weak self] ids, metadata in
             guard let self else { return }
             withPlatformAnimation(metadata) {
-                self.syncChildren(ids: ids)
+                if self.lazyStack != nil {
+                    self.updateVirtualIds(ids)
+                } else {
+                    self.syncChildren(ids: ids)
+                }
             }
         }
     }
 
     private func reloadChildrenFromRust() {
-        syncChildren(ids: anyViews.allIds())
+        let ids = anyViews.allIds()
+        if lazyStack != nil {
+            updateVirtualIds(ids)
+        } else {
+            syncChildren(ids: ids)
+        }
+    }
+
+    private func updateVirtualIds(_ ids: [Int32]) {
+        var seenIds = Set<Int32>()
+        for id in ids {
+            precondition(seenIds.insert(id).inserted, "Duplicate child view id in WuiContainer: \(id)")
+        }
+
+        itemIds = ids
+        measuredMainAxis = measuredMainAxis.filter { seenIds.contains($0.key) }
+        measuredCrossAxis = measuredCrossAxis.filter { seenIds.contains($0.key) }
+        for (id, child) in renderedChildren where !seenIds.contains(id) {
+            child.removeFromSuperview()
+        }
+        renderedChildren = renderedChildren.filter { seenIds.contains($0.key) }
+        cachedSubViews = nil
+        invalidateVirtualLayout()
     }
 
     private func syncChildren(ids: [Int32]) {
@@ -94,19 +176,21 @@ final class WuiContainer: PlatformView, WuiComponent {
         setChildren(children)
     }
 
-    /// Get the unique view ID at the specified index.
-    /// This returns the view's identity, not the type ID.
     func getViewId(at index: Int) -> WuiId {
         anyViews.getId(at: index)
     }
 
-    // MARK: - WuiComponent
-
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
-        measure(proposal).cgSize
+        if let lazyStack {
+            return lazyStackSizeThatFits(proposal, config: lazyStack)
+        }
+        return measure(proposal).cgSize
     }
 
     func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions {
+        if let lazyStack {
+            return WuiViewDimensions(size: lazyStackSizeThatFits(proposal, config: lazyStack))
+        }
         return bridge.containerMeasure(
             layout: wuiLayout,
             parentProposal: proposal,
@@ -114,25 +198,30 @@ final class WuiContainer: PlatformView, WuiComponent {
         )
     }
 
-    // MARK: - Layout
-
     #if canImport(UIKit)
         override func layoutSubviews() {
             super.layoutSubviews()
+            installScrollObservationIfNeeded()
             performLayout()
         }
 
         override func sizeThatFits(_ size: CGSize) -> CGSize {
-            let proposal = WuiProposalSize(size: size)
-            return sizeThatFits(proposal)
+            sizeThatFits(WuiProposalSize(size: size))
         }
 
         override var intrinsicContentSize: CGSize {
             sizeThatFits(WuiProposalSize())
         }
+
+        override func didMoveToSuperview() {
+            super.didMoveToSuperview()
+            teardownScrollObservation()
+            installScrollObservationIfNeeded()
+        }
     #elseif canImport(AppKit)
         override func layout() {
             super.layout()
+            installScrollObservationIfNeeded()
             performLayout()
         }
 
@@ -145,17 +234,25 @@ final class WuiContainer: PlatformView, WuiComponent {
         }
 
         override var isFlipped: Bool { true }
+
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            teardownScrollObservation()
+            installScrollObservationIfNeeded()
+        }
     #endif
 
     private func performLayout() {
+        if let lazyStack {
+            performLazyStackLayout(config: lazyStack)
+            return
+        }
+
         guard !childViews.isEmpty else { return }
 
-        // CRITICAL: Create proposal from bounds so children measure with actual available width
-        // This ensures VStack centering works correctly - children know the real container width
         let boundsProposal = WuiProposalSize(
             width: Float(bounds.width), height: Float(bounds.height))
 
-        // Measure with bounds-based proposal first - this ensures children know available width
         _ = bridge.containerSize(
             layout: wuiLayout,
             parentProposal: boundsProposal,
@@ -172,14 +269,13 @@ final class WuiContainer: PlatformView, WuiComponent {
             guard index < childViews.count else { break }
             var frame = rect
             guard frame.isValidForLayout else {
-                let warn =
-                    "[WuiLayout] Warning: WuiContainer received invalid rect for child \(index): \(frame)"
-                Logger.waterui.warning("\(warn)")
+                Logger.waterui.warning(
+                    "[WuiLayout] WuiContainer received invalid rect for child \(index): \(String(describing: frame))"
+                )
                 continue
             }
 
             #if canImport(AppKit)
-                // Convert to AppKit coordinate system if not flipped
                 if !isFlipped {
                     frame.origin.y = bounds.height - frame.origin.y - frame.height
                 }
@@ -189,9 +285,241 @@ final class WuiContainer: PlatformView, WuiComponent {
         }
     }
 
-    // MARK: - Child Management
+    private func lazyStackSizeThatFits(_ proposal: WuiProposalSize, config: LazyStackConfig) -> CGSize {
+        guard !itemIds.isEmpty else { return .zero }
 
-    func setChildren(_ newChildren: [WuiAnyView]) {
+        let crossConstraint = switch config.axis {
+        case .vertical:
+            proposal.width.map(CGFloat.init) ?? 0
+        case .horizontal:
+            proposal.height.map(CGFloat.init) ?? 0
+        }
+
+        ensureSampleMeasurement(crossConstraint: crossConstraint, config: config)
+        let estimate = estimatedMainAxisExtent(crossConstraint: crossConstraint, config: config)
+        let totalMainAxis = itemIds.enumerated().reduce(CGFloat.zero) { partial, pair in
+            let (index, id) = pair
+            let spacing = index + 1 < itemIds.count ? config.spacing : 0
+            return partial + (measuredMainAxis[id] ?? estimate) + spacing
+        }
+
+        switch config.axis {
+        case .vertical:
+            let width = proposal.width.map(CGFloat.init)
+                ?? measuredCrossAxis.values.max()
+                ?? bounds.width
+            return CGSize(width: width, height: totalMainAxis)
+        case .horizontal:
+            let height = proposal.height.map(CGFloat.init)
+                ?? measuredCrossAxis.values.max()
+                ?? bounds.height
+            return CGSize(width: totalMainAxis, height: height)
+        }
+    }
+
+    private func ensureSampleMeasurement(crossConstraint: CGFloat, config: LazyStackConfig) {
+        guard measuredMainAxis.isEmpty, let firstId = itemIds.first else { return }
+        let sample = renderedChildren[firstId] ?? anyViews.getView(at: 0, env: env)
+        let size = measureLazyChild(sample, crossConstraint: crossConstraint, config: config)
+        measuredMainAxis[firstId] = mainAxisExtent(of: size, config: config)
+        measuredCrossAxis[firstId] = crossAxisExtent(of: size, config: config)
+    }
+
+    private func estimatedMainAxisExtent(crossConstraint: CGFloat, config: LazyStackConfig) -> CGFloat {
+        ensureSampleMeasurement(crossConstraint: crossConstraint, config: config)
+        guard !measuredMainAxis.isEmpty else { return 0 }
+        return measuredMainAxis.values.reduce(0, +) / CGFloat(measuredMainAxis.count)
+    }
+
+    private func mainAxisExtent(of size: CGSize, config: LazyStackConfig) -> CGFloat {
+        switch config.axis {
+        case .vertical:
+            size.height
+        case .horizontal:
+            size.width
+        }
+    }
+
+    private func crossAxisExtent(of size: CGSize, config: LazyStackConfig) -> CGFloat {
+        switch config.axis {
+        case .vertical:
+            size.width
+        case .horizontal:
+            size.height
+        }
+    }
+
+    private func measureLazyChild(
+        _ child: WuiAnyView,
+        crossConstraint: CGFloat,
+        config: LazyStackConfig
+    ) -> CGSize {
+        let stretchAxis = child.stretchAxis
+        switch config.axis {
+        case .vertical:
+            precondition(
+                stretchAxis != .vertical && stretchAxis != .both && stretchAxis != .mainAxis,
+                "Lazy vertical stack does not support children stretching on the main axis"
+            )
+            let proposal = WuiProposalSize(
+                width: crossConstraint > 0 ? Float(crossConstraint) : nil,
+                height: nil
+            )
+            let intrinsic = child.sizeThatFits(proposal)
+            let finalWidth: CGFloat
+            if stretchAxis == .horizontal || stretchAxis == .both || stretchAxis == .crossAxis
+                || intrinsic.width.isInfinite
+            {
+                finalWidth = crossConstraint > 0 ? crossConstraint : intrinsic.width
+            } else if crossConstraint > 0 {
+                finalWidth = min(intrinsic.width, crossConstraint)
+            } else {
+                finalWidth = intrinsic.width
+            }
+            return CGSize(width: finalWidth, height: intrinsic.height)
+        case .horizontal:
+            precondition(
+                stretchAxis != .horizontal && stretchAxis != .both && stretchAxis != .mainAxis,
+                "Lazy horizontal stack does not support children stretching on the main axis"
+            )
+            let proposal = WuiProposalSize(
+                width: nil,
+                height: crossConstraint > 0 ? Float(crossConstraint) : nil
+            )
+            let intrinsic = child.sizeThatFits(proposal)
+            let finalHeight: CGFloat
+            if stretchAxis == .vertical || stretchAxis == .both || stretchAxis == .crossAxis
+                || intrinsic.height.isInfinite
+            {
+                finalHeight = crossConstraint > 0 ? crossConstraint : intrinsic.height
+            } else if crossConstraint > 0 {
+                finalHeight = min(intrinsic.height, crossConstraint)
+            } else {
+                finalHeight = intrinsic.height
+            }
+            return CGSize(width: intrinsic.width, height: finalHeight)
+        }
+    }
+
+    private func performLazyStackLayout(config: LazyStackConfig) {
+        guard !itemIds.isEmpty else { return }
+
+        let crossConstraint = switch config.axis {
+        case .vertical:
+            bounds.width
+        case .horizontal:
+            bounds.height
+        }
+
+        if crossConstraint != lastCrossConstraint {
+            lastCrossConstraint = crossConstraint
+            measuredMainAxis.removeAll()
+            measuredCrossAxis.removeAll()
+            for child in renderedChildren.values {
+                child.removeFromSuperview()
+            }
+            renderedChildren.removeAll()
+        }
+
+        let viewport = currentViewportBounds()
+        let estimate = estimatedMainAxisExtent(crossConstraint: crossConstraint, config: config)
+        let overscan = max(estimate, 1) * 2
+        let viewportStart = switch config.axis {
+        case .vertical:
+            viewport.minY
+        case .horizontal:
+            viewport.minX
+        }
+        let viewportEnd = switch config.axis {
+        case .vertical:
+            viewport.maxY
+        case .horizontal:
+            viewport.maxX
+        }
+
+        let window = resolveVisibleWindow(
+            count: itemIds.count,
+            startOffset: max(viewportStart - overscan, 0),
+            endOffset: viewportEnd + overscan
+        ) { index in
+            let id = itemIds[index]
+            let extent = measuredMainAxis[id] ?? estimate
+            return extent + (index + 1 < itemIds.count ? config.spacing : 0)
+        }
+
+        var activeIds = Set<Int32>()
+        var cursor = window.leadingOffset
+        var needsInvalidation = false
+
+        for index in window.start..<window.end {
+            let id = itemIds[index]
+            let child = renderedChildren[id] ?? anyViews.getView(at: index, env: env)
+            if renderedChildren[id] == nil {
+                child.translatesAutoresizingMaskIntoConstraints = true
+                addSubview(child)
+                renderedChildren[id] = child
+            }
+            activeIds.insert(id)
+
+            let size = measureLazyChild(child, crossConstraint: crossConstraint, config: config)
+            let mainAxis = mainAxisExtent(of: size, config: config)
+            let crossAxis = crossAxisExtent(of: size, config: config)
+            if measuredMainAxis[id] != mainAxis || measuredCrossAxis[id] != crossAxis {
+                measuredMainAxis[id] = mainAxis
+                measuredCrossAxis[id] = crossAxis
+                needsInvalidation = true
+            }
+
+            switch config.axis {
+            case let .vertical(horizontalAlignment):
+                let originX: CGFloat
+                switch horizontalAlignment {
+                case WuiHorizontalAlignment_Leading:
+                    originX = 0
+                case WuiHorizontalAlignment_Trailing:
+                    originX = bounds.width - size.width
+                default:
+                    originX = (bounds.width - size.width) * 0.5
+                }
+                child.frame = CGRect(x: originX, y: cursor, width: size.width, height: size.height)
+                cursor += size.height + (index + 1 < itemIds.count ? config.spacing : 0)
+            case let .horizontal(verticalAlignment):
+                let originY: CGFloat
+                switch verticalAlignment {
+                case WuiVerticalAlignment_Top:
+                    originY = 0
+                case WuiVerticalAlignment_Bottom:
+                    originY = bounds.height - size.height
+                default:
+                    originY = (bounds.height - size.height) * 0.5
+                }
+                child.frame = CGRect(x: cursor, y: originY, width: size.width, height: size.height)
+                cursor += size.width + (index + 1 < itemIds.count ? config.spacing : 0)
+            }
+        }
+
+        for (id, child) in renderedChildren where !activeIds.contains(id) {
+            child.removeFromSuperview()
+        }
+        renderedChildren = renderedChildren.filter { activeIds.contains($0.key) }
+
+        if needsInvalidation {
+            invalidateVirtualLayout()
+        }
+    }
+
+    private func invalidateVirtualLayout() {
+        cachedSubViews = nil
+        invalidateIntrinsicContentSize()
+        #if canImport(UIKit)
+            setNeedsLayout()
+        #elseif canImport(AppKit)
+            needsLayout = true
+        #endif
+        invalidateLayoutHierarchy()
+    }
+
+    private func setChildren(_ newChildren: [WuiAnyView]) {
         for child in childViews {
             child.removeFromSuperview()
         }
@@ -221,4 +549,67 @@ final class WuiContainer: PlatformView, WuiComponent {
         cachedSubViews = cache
         return cache
     }
+
+    private func currentViewportBounds() -> CGRect {
+        #if canImport(UIKit)
+            guard let scrollView = nearestEnclosingScrollView() else {
+                return bounds
+            }
+            return convert(scrollView.bounds, from: scrollView)
+        #elseif canImport(AppKit)
+            guard let scrollView = enclosingScrollView else {
+                return bounds
+            }
+            return convert(scrollView.contentView.bounds, from: scrollView.contentView)
+        #endif
+    }
+
+    #if canImport(UIKit)
+        private func teardownScrollObservation() {
+            scrollObservation?.invalidate()
+            scrollObservation = nil
+        }
+
+        private func nearestEnclosingScrollView() -> UIScrollView? {
+            var view = superview
+            while let current = view {
+                if let scrollView = current as? UIScrollView {
+                    return scrollView
+                }
+                view = current.superview
+            }
+            return nil
+        }
+
+        private func installScrollObservationIfNeeded() {
+            guard lazyStack != nil else { return }
+            guard scrollObservation == nil, let scrollView = nearestEnclosingScrollView() else { return }
+            scrollObservation = scrollView.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
+                self?.setNeedsLayout()
+            }
+        }
+    #elseif canImport(AppKit)
+        private func teardownScrollObservation() {
+            if let boundsObserver {
+                NotificationCenter.default.removeObserver(boundsObserver)
+                self.boundsObserver = nil
+            }
+            enclosingScrollView?.contentView.postsBoundsChangedNotifications = false
+        }
+
+        private func installScrollObservationIfNeeded() {
+            guard lazyStack != nil else { return }
+            guard boundsObserver == nil, let scrollView = enclosingScrollView else { return }
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            boundsObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.needsLayout = true
+                }
+            }
+        }
+    #endif
 }
