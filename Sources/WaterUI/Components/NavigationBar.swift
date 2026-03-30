@@ -16,6 +16,7 @@ struct WuiNavigationTitle {
 @MainActor
 struct WuiNavigationSearch {
     let text: WuiBinding<WuiStr>
+    let promptView: WuiAnyView
     let prompt: String
 }
 
@@ -175,9 +176,11 @@ func makeNavigationBarState(from bar: CWaterUI.WuiBar, env: WuiEnvironment) -> W
     let search: WuiNavigationSearch?
     if let searchPtr = bar.search {
         let binding = WuiBinding<WuiStr>(searchPtr.pointee.text)
+        let promptView = WuiAnyView(anyview: searchPtr.pointee.prompt, env: env)
         search = WuiNavigationSearch(
             text: binding,
-            prompt: WuiStr(searchPtr.pointee.prompt).toString()
+            promptView: promptView,
+            prompt: extractNavigationTitleText(from: promptView).0 ?? ""
         )
     } else {
         search = nil
