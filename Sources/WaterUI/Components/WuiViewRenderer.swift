@@ -102,11 +102,55 @@ private func renderViewToRGBA(
     }
 }
 
+#if canImport(AppKit)
+/// Bridge the synchronous preview capture path onto the real first-paint readiness flow.
+@preconcurrency @MainActor
+private func waitForPreviewFirstPaintReady(_ view: WuiAnyView) {
+    view.readySynchronously()
+}
+
+@preconcurrency @MainActor
+private func withPreviewGpuSurfaceCaptureMode<T>(
+    in view: NSView,
+    _ body: () -> T
+) -> T {
+    let surfaces = collectPreviewGpuSurfaces(in: view)
+    for surface in surfaces {
+        surface.beginExternalRendering()
+        surface.beginCaptureSuppression()
+    }
+    defer {
+        for surface in surfaces.reversed() {
+            surface.endCaptureSuppression()
+            surface.endExternalRendering()
+        }
+    }
+    return body()
+}
+
+@preconcurrency @MainActor
+private func collectPreviewGpuSurfaces(in view: NSView) -> [WuiGpuSurface] {
+    var surfaces: [WuiGpuSurface] = []
+    collectPreviewGpuSurfaces(in: view, into: &surfaces)
+    return surfaces
+}
+
+@preconcurrency @MainActor
+private func collectPreviewGpuSurfaces(in view: NSView, into surfaces: inout [WuiGpuSurface]) {
+    if let surface = view as? WuiGpuSurface {
+        surfaces.append(surface)
+    }
+    for subview in view.subviews {
+        collectPreviewGpuSurfaces(in: subview, into: &surfaces)
+    }
+}
+#endif
+
 /// Captures a view to RGBA pixel data.
 /// Returns the data along with actual pixel dimensions (width, height).
 @preconcurrency @MainActor
 private func captureViewToRGBA(
-    view: PlatformView,
+    view: WuiAnyView,
     proposedSize: CGSize,
     scale: CGFloat
 ) -> (Data, Int, Int)? {
@@ -217,32 +261,33 @@ private func captureViewToRGBA(
     // Force layout
     view.layoutSubtreeIfNeeded()
 
-    // Display window (offscreen) to trigger rendering pipeline
-    tempWindow.orderFrontRegardless()
-    tempWindow.display()  // Force full display, not just if needed
+    withPreviewGpuSurfaceCaptureMode(in: view) {
+        // Display window (offscreen) to trigger rendering pipeline
+        tempWindow.orderFrontRegardless()
+        tempWindow.display()  // Force full display, not just if needed
 
-    // Force text fields to draw their content
-    forceTextFieldsToDisplay(in: view)
+        // Force text fields to draw their content
+        forceTextFieldsToDisplay(in: view)
 
-    // Wait for GPU surfaces to render their first frame
-    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        // Drive the real first-paint readiness flow instead of sleeping blindly.
+        waitForPreviewFirstPaintReady(view)
 
-    // Capture using cacheDisplay for text rendering
-    if let bitmapRep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-        view.cacheDisplay(in: view.bounds, to: bitmapRep)
-        if let textImage = bitmapRep.cgImage {
-            context.draw(textImage, in: CGRect(origin: .zero, size: actualSize))
+        // Capture using cacheDisplay for text rendering
+        if let bitmapRep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmapRep)
+            if let textImage = bitmapRep.cgImage {
+                context.draw(textImage, in: CGRect(origin: .zero, size: actualSize))
+            }
         }
+
+        // Draw GPU surfaces behind AppKit-rendered content
+        context.saveGState()
+        context.setBlendMode(.destinationOver)
+        captureGpuSurfaces(in: view, to: context, rootBounds: view.bounds, scale: scale)
+        context.restoreGState()
+
+        tempWindow.orderOut(nil as Any?)
     }
-
-    // Draw GPU surfaces behind AppKit-rendered content
-    context.saveGState()
-    context.setBlendMode(.destinationOver)
-    captureGpuSurfaces(in: view, to: context, rootBounds: view.bounds, scale: scale)
-    context.restoreGState()
-
-    // Clean up
-    tempWindow.orderOut(nil as Any?)
     #endif
 
     return (pixelData, width, height)

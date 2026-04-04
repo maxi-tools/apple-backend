@@ -1221,6 +1221,22 @@ final class WuiAppliedFilter: PlatformView, WuiComponent, WuiFirstPaintReadyPart
         }
     }
 
+    func waitForReadySynchronously() -> Bool {
+        let waitState = WuiSynchronousReadyWaitState()
+
+        requestReadyFrame { ok in
+            MainActor.assumeIsolated {
+                waitState.result = ok
+            }
+        }
+
+        while waitState.result == nil {
+            _ = RunLoop.current.run(mode: .default, before: .distantFuture)
+        }
+
+        return waitState.result ?? false
+    }
+
     func participatesInFirstPaintReady() -> Bool {
         #if canImport(UIKit)
             guard window != nil else { return false }

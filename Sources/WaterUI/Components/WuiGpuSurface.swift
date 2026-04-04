@@ -412,6 +412,28 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         }
     }
 
+    func awaitReadySynchronously() -> Bool {
+        var state: OpaquePointer?
+        while true {
+            let info = getStateInfo()
+            state = info.state
+
+            if state != nil {
+                break
+            }
+            if !info.isInitializing {
+                return false
+            }
+            _ = RunLoop.current.run(mode: .default, before: .distantFuture)
+        }
+
+        guard let state else { return false }
+        let stateAddr = Int(bitPattern: state)
+        return WuiSharedRenderQueue.sync {
+            waterui_gpu_surface_await_ready(OpaquePointer(bitPattern: stateAddr))
+        }
+    }
+
     func shutdown() {
         lock.lock()
         isActive = false
@@ -1209,6 +1231,10 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
     /// Call this before showing the window to prevent flicker.
     func waitForReady() async -> Bool {
         await renderState.awaitReady()
+    }
+
+    func waitForReadySynchronously() -> Bool {
+        renderState.awaitReadySynchronously()
     }
 
     func participatesInFirstPaintReady() -> Bool {

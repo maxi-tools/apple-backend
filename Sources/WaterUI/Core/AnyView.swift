@@ -19,7 +19,25 @@ import os
 protocol WuiFirstPaintReadyParticipant: AnyObject, Sendable {
     func prepareForReady()
     func waitForReady() async -> Bool
+    func waitForReadySynchronously() -> Bool
     func participatesInFirstPaintReady() -> Bool
+}
+
+@MainActor
+final class WuiSynchronousReadyWaitState: @unchecked Sendable {
+    var result: Bool?
+}
+
+@MainActor
+private func unresolvedFirstPaintReadyParticipants(
+    _ participants: [any WuiFirstPaintReadyParticipant]
+) -> String {
+    participants
+        .map {
+            let addr = UInt(bitPattern: Unmanaged.passUnretained($0 as AnyObject).toOpaque())
+            return String(format: "0x%llx", addr)
+        }
+        .joined(separator: ",")
 }
 
 @MainActor
@@ -53,18 +71,50 @@ private func waitForFirstPaintReadyParticipants(
         guard !pending.isEmpty else { break }
 
         if start.duration(to: ContinuousClock.now) >= .milliseconds(totalTimeoutMs) {
-            let unresolved = pending
-                .map {
-                    let addr = UInt(bitPattern: Unmanaged.passUnretained($0 as AnyObject).toOpaque())
-                    return String(format: "0x%llx", addr)
-                }
-                .joined(separator: ",")
+            let unresolved = unresolvedFirstPaintReadyParticipants(pending)
             fatalError(
                 "WuiAnyView.ready timed out after \(totalTimeoutMs)ms with \(pending.count)/\(participants.count) unresolved GPU participant(s): \(unresolved). Partial first paint is forbidden."
             )
         }
 
         try? await Task.sleep(nanoseconds: retryNs)
+    }
+}
+
+@MainActor
+private func waitForFirstPaintReadyParticipantsSynchronously(
+    _ participants: [any WuiFirstPaintReadyParticipant],
+    totalTimeoutMs: Int,
+    retryNs: UInt64
+) {
+    let start = ContinuousClock.now
+    var pending = participants
+
+    while !pending.isEmpty {
+        let current = pending
+        var failed: [any WuiFirstPaintReadyParticipant] = []
+        failed.reserveCapacity(current.count)
+
+        for participant in current {
+            if !participant.waitForReadySynchronously() {
+                failed.append(participant)
+            }
+        }
+
+        pending = failed
+        guard !pending.isEmpty else { break }
+
+        if start.duration(to: ContinuousClock.now) >= .milliseconds(totalTimeoutMs) {
+            let unresolved = unresolvedFirstPaintReadyParticipants(pending)
+            fatalError(
+                "WuiAnyView.readySynchronously timed out after \(totalTimeoutMs)ms with \(pending.count)/\(participants.count) unresolved GPU participant(s): \(unresolved). Partial first paint is forbidden."
+            )
+        }
+
+        _ = RunLoop.current.run(
+            mode: .default,
+            before: Date(timeIntervalSinceNow: Double(retryNs) / 1_000_000_000)
+        )
     }
 }
 
@@ -723,6 +773,24 @@ private func registerBuiltinComponentsIfNeeded() {
             let totalTimeoutMs = gpuReadyTotalTimeoutMs()
             let retryNs = gpuReadyRetryIntervalNs()
             await waitForFirstPaintReadyParticipants(
+                participants,
+                totalTimeoutMs: totalTimeoutMs,
+                retryNs: retryNs
+            )
+        }
+
+        @MainActor
+        public func readySynchronously() {
+            let all = collectFirstPaintReadyParticipants()
+            for participant in all {
+                participant.prepareForReady()
+            }
+            let participants = firstPaintReadyParticipants(all)
+            guard !participants.isEmpty else { return }
+
+            let totalTimeoutMs = gpuReadyTotalTimeoutMs()
+            let retryNs = gpuReadyRetryIntervalNs()
+            waitForFirstPaintReadyParticipantsSynchronously(
                 participants,
                 totalTimeoutMs: totalTimeoutMs,
                 retryNs: retryNs
