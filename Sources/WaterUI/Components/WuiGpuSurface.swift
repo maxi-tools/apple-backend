@@ -1027,10 +1027,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
 	            guard let self else { return }
 	            guard success else { return }
 	            self.isGpuInitialized = true
-            // Trigger first frames immediately. On-demand surfaces don't have a display link,
-            // so a transient swapchain timeout could otherwise leave them blank until another
-            // event marks them dirty.
-            self.renderFirstFrames()
+            self.renderInitialFrame()
 	        }
 	    }
 
@@ -1101,18 +1098,8 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
         }
     }
 
-    private func renderFirstFrames() {
-        // Always request a frame immediately.
+    private func renderInitialFrame() {
         renderFrame(force: true)
-
-        // Schedule a couple of forced retries to survive early drawable timeouts on macOS.
-        // Keep this cheap: solid colors are fast and this only runs at init time.
-        let retryDelays: [DispatchTimeInterval] = [.milliseconds(16), .milliseconds(80)]
-        for delay in retryDelays {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.renderFrame(force: true)
-            }
-        }
     }
 
 	    private func isEffectivelyVisible() -> Bool {

@@ -62,6 +62,7 @@ final class WuiVideo: PlatformView, WuiComponent {
     private var requestedPlaybackRate: Float = 1.0
     private var preservePitch = true
     private var isDucked = false
+    private var playbackShouldStartWhenReady = false
     private var mediaSessionBridge: WuiWaterKitMediaSessionBridge?
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
@@ -282,6 +283,7 @@ final class WuiVideo: PlatformView, WuiComponent {
 
         guard let url = URL(string: urlString) else {
             currentURL = nil
+            playbackShouldStartWhenReady = false
             player.pause()
             player.replaceCurrentItem(with: nil)
             emitEvent(
@@ -298,6 +300,7 @@ final class WuiVideo: PlatformView, WuiComponent {
         }
         currentURL = url
         isBuffering = false
+        playbackShouldStartWhenReady = true
 
         let playerItem = AVPlayerItem(url: url)
         applyPitchAlgorithm(to: playerItem)
@@ -317,6 +320,7 @@ final class WuiVideo: PlatformView, WuiComponent {
                     self.emitEvent(eventType: CWaterUI.WuiVideoEventType_ReadyToPlay)
                     self.mediaSessionBridge?.metadataDidChange()
                     self.mediaSessionBridge?.playbackDidChange()
+                    self.startPlaybackIfReady(for: item)
                 case .unknown:
                     break
                 @unknown default:
@@ -351,10 +355,6 @@ final class WuiVideo: PlatformView, WuiComponent {
 
         player.replaceCurrentItem(with: playerItem)
         updatePlaybackRate(playbackRateBinding.value)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.mediaSessionPlay()
-        }
     }
 
     private func updateVolume(_ volume: Float) {
@@ -386,6 +386,19 @@ final class WuiVideo: PlatformView, WuiComponent {
     private func applyPitchAlgorithm(to item: AVPlayerItem?) {
         guard let item else { return }
         item.audioTimePitchAlgorithm = preservePitch ? .spectral : .varispeed
+    }
+
+    private func startPlaybackIfReady(for item: AVPlayerItem) {
+        guard item == player.currentItem else { return }
+        guard playbackShouldStartWhenReady else { return }
+        playbackShouldStartWhenReady = false
+        startPlaybackImmediately()
+    }
+
+    private func startPlaybackImmediately() {
+        player.play()
+        player.rate = requestedPlaybackRate
+        mediaSessionBridge?.playbackDidChange()
     }
 
     private func resolvedDurationSeconds() -> Double {
@@ -492,17 +505,23 @@ extension WuiVideo: WuiMediaSessionHost {
 
     func mediaSessionPlay() {
         guard player.currentItem != nil else { return }
-        player.play()
-        player.rate = requestedPlaybackRate
-        mediaSessionBridge?.playbackDidChange()
+        guard player.currentItem?.status == .readyToPlay else {
+            playbackShouldStartWhenReady = true
+            mediaSessionBridge?.playbackDidChange()
+            return
+        }
+        playbackShouldStartWhenReady = false
+        startPlaybackImmediately()
     }
 
     func mediaSessionPause() {
+        playbackShouldStartWhenReady = false
         player.pause()
         mediaSessionBridge?.playbackDidChange()
     }
 
     func mediaSessionStop() {
+        playbackShouldStartWhenReady = false
         player.pause()
         player.seek(to: .zero)
         mediaSessionBridge?.playbackDidChange()
