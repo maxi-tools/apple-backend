@@ -260,6 +260,7 @@ func buildUIKitSystemMenus(
     }
 }
 
+@MainActor
 func collectUIKitMenuShortcuts(from nodes: [MenuNodeData]) -> [UIKitMenuShortcut] {
     var shortcuts: [UIKitMenuShortcut] = []
 

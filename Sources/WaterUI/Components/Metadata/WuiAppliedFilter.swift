@@ -462,9 +462,12 @@ final class WuiAppliedFilter: PlatformView, WuiComponent, WuiFirstPaintReadyPart
         #if canImport(AppKit)
             ensureLayerBacked(contentView)
         #endif
-        guard let layer = contentView.layer else {
+        let layer = contentView.layer
+        #if canImport(AppKit)
+        guard let layer else {
             fatalError("AppliedFilter capture content view must be layer-backed before visibility updates")
         }
+        #endif
         guard layer.isHidden != hidden else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -569,9 +572,12 @@ final class WuiAppliedFilter: PlatformView, WuiComponent, WuiFirstPaintReadyPart
         #if canImport(AppKit)
             ensureLayerBacked(contentView)
         #endif
-        guard let layer = contentView.layer else {
+        let layer = contentView.layer
+        #if canImport(AppKit)
+        guard let layer else {
             fatalError("AppliedFilter capture content view must be layer-backed before snapshot capture")
         }
+        #endif
         let wasHidden = layer.isHidden
         CATransaction.begin()
         CATransaction.setDisableActions(true)

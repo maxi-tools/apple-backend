@@ -111,8 +111,10 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
         #if canImport(UIKit)
         systemLayoutSizeFitting(
             CGSize(
-                width: proposal.width.isFinite ? CGFloat(proposal.width) : UIView.noIntrinsicMetric,
-                height: proposal.height.isFinite ? CGFloat(proposal.height) : UIView.noIntrinsicMetric
+                width: proposal.width.map { $0.isFinite ? CGFloat($0) : UIView.noIntrinsicMetric }
+                    ?? UIView.noIntrinsicMetric,
+                height: proposal.height.map { $0.isFinite ? CGFloat($0) : UIView.noIntrinsicMetric }
+                    ?? UIView.noIntrinsicMetric
             )
         )
         #elseif canImport(AppKit)
@@ -197,24 +199,23 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
         WuiArray<CWaterUI.WuiDate>(c: binding.value).toArray()
     }
 
-    private func decoratedDates() -> Set<String> {
-        Set(WuiArray<CWaterUI.WuiDate>(c: decorated.value).toArray().map(dateKey))
+    private func decoratedDates() -> [CWaterUI.WuiDate] {
+        WuiArray<CWaterUI.WuiDate>(c: decorated.value).toArray()
     }
 
     private func syncFromModel() {
         let selected = selectedDates()
         let decorated = decoratedDates()
+        let decoratedKeys = Set(decorated.map(dateKey))
         let current = selected.first ?? range.start
         #if canImport(UIKit)
         if #available(iOS 16.0, *), let calendarView, let selectionBehavior = calendarSelection {
             let selectedComponents = selected.map(dateComponents)
+            let decoratedComponents = decorated.map(dateComponents)
             isSyncingCalendarSelection = true
             selectionBehavior.selectedDates = selectedComponents
             calendarView.reloadDecorations(forDateComponents: selectedComponents, animated: false)
-            calendarView.reloadDecorations(
-                forDateComponents: Array(decorated.map(dateComponents)),
-                animated: false
-            )
+            calendarView.reloadDecorations(forDateComponents: decoratedComponents, animated: false)
             isSyncingCalendarSelection = false
         } else {
             picker.date = toDate(current)
@@ -225,7 +226,7 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
             }
             for date in selected {
                 let label = UILabel()
-                label.text = formatted(date, decorated: decorated.contains(dateKey(date)))
+                label.text = formatted(date, decorated: decoratedKeys.contains(dateKey(date)))
                 selectionList.addArrangedSubview(label)
             }
         }
@@ -237,7 +238,9 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
             view.removeFromSuperview()
         }
         for date in selected {
-            let label = NSTextField(labelWithString: formatted(date, decorated: decorated.contains(dateKey(date))))
+            let label = NSTextField(
+                labelWithString: formatted(date, decorated: decoratedKeys.contains(dateKey(date)))
+            )
             selectionList.addArrangedSubview(label)
         }
         #endif
@@ -294,7 +297,8 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
         guard let date = dateFromComponents(components) else {
             return false
         }
-        return date >= range.start && date <= range.end
+        let currentDate = toDate(date)
+        return currentDate >= toDate(range.start) && currentDate <= toDate(range.end)
     }
 
     @available(iOS 16.0, *)
@@ -308,7 +312,7 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
     @available(iOS 16.0, *)
     fileprivate func decoration(for components: DateComponents) -> UICalendarView.Decoration? {
         guard let date = dateFromComponents(components),
-              decoratedDates().contains(dateKey(date))
+              Set(decoratedDates().map(dateKey)).contains(dateKey(date))
         else {
             return nil
         }
