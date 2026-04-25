@@ -36,6 +36,10 @@ enum WuiSharedRenderQueue {
         return queue.sync(flags: .barrier, execute: work)
     }
 
+    static func barrierAsync(_ work: @escaping @Sendable () -> Void) {
+        queue.async(flags: .barrier, execute: work)
+    }
+
     static func drain() {
         if isCurrent {
             return

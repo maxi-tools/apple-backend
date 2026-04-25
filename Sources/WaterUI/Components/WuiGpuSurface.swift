@@ -326,6 +326,33 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         WuiSharedRenderQueue.drain()
     }
 
+    private func hasRenderInFlight() -> Bool {
+        lock.lock()
+        let inFlight = renderInFlight
+        lock.unlock()
+        return inFlight
+    }
+
+    func waitForInFlightRenderSynchronously() {
+        let shouldWait = hasRenderInFlight()
+
+        if shouldWait {
+            WuiSharedRenderQueue.drain()
+        }
+    }
+
+    func waitForInFlightRender() async {
+        let shouldWait = hasRenderInFlight()
+
+        guard shouldWait else { return }
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            WuiSharedRenderQueue.barrierAsync {
+                continuation.resume()
+            }
+        }
+    }
+
     func setExternalRendering(_ enabled: Bool) {
         lock.lock()
         externalRendering = enabled
@@ -401,6 +428,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         }
 
         guard let state else { return false }
+        await waitForInFlightRender()
         let stateAddr = Int(bitPattern: state)
 
         // Call await_ready on render queue and forward success to caller.
@@ -428,6 +456,7 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         }
 
         guard let state else { return false }
+        waitForInFlightRenderSynchronously()
         let stateAddr = Int(bitPattern: state)
         return WuiSharedRenderQueue.sync {
             waterui_gpu_surface_await_ready(OpaquePointer(bitPattern: stateAddr))
@@ -1148,6 +1177,7 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
         externalLock.unlock()
         if shouldEnable {
             setExternalRendering(true)
+            renderState.waitForInFlightRenderSynchronously()
         }
     }
 
