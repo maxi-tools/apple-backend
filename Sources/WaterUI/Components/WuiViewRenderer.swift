@@ -221,6 +221,11 @@ private func captureViewToRGBA(
 
     #if canImport(UIKit)
     // UIKit rendering
+    context.saveGState()
+    defer { context.restoreGState() }
+    context.translateBy(x: 0, y: actualSize.height)
+    context.scaleBy(x: 1, y: -1)
+
     UIGraphicsPushContext(context)
     defer { UIGraphicsPopContext() }
 
