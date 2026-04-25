@@ -24,10 +24,6 @@ final class WuiAnyViews {
         Int(waterui_anyviews_len(inner))
     }
 
-    func getId(at index: Int) -> WuiId {
-        waterui_anyviews_get_id(inner, UInt(index))
-    }
-
     /// Returns IDs in `[start, end)` range.
     func getIds(start: Int, end: Int) -> [Int32] {
         let safeStart = max(0, start)

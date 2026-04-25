@@ -76,23 +76,6 @@ final class MenuActionRef: NSObject {
     }
 }
 
-#if canImport(AppKit)
-final class MenuActionTarget: NSObject {
-    private let handler: (OpaquePointer) -> Void
-
-    init(handler: @escaping (OpaquePointer) -> Void) {
-        self.handler = handler
-    }
-
-    @objc func invoke(_ sender: NSMenuItem) {
-        guard let action = sender.representedObject as? MenuActionRef else {
-            return
-        }
-        handler(action.actionPtr)
-    }
-}
-#endif
-
 @MainActor
 func parseMenuNodes(from array: CWaterUI.WuiArray_WuiMenuItem) -> [MenuNodeData] {
     WuiArray<CWaterUI.WuiMenuItem>(array).toArray().map(parseMenuNode)
@@ -154,7 +137,6 @@ private func readRequiredMenuBool(
     }
     return WuiComputed<Bool>(valuePtr).value
 }
-
 
 private func readMenuShortcut(
     _ shortcutPtr: UnsafeMutablePointer<CWaterUI.WuiShortcut>?
@@ -289,6 +271,28 @@ func collectUIKitMenuShortcuts(from nodes: [MenuNodeData]) -> [UIKitMenuShortcut
     visit(nodes)
     return shortcuts
 }
+
+private func splitMenuGroups(_ nodes: [MenuNodeData]) -> [[MenuNodeData]] {
+    var groups: [[MenuNodeData]] = []
+    var current: [MenuNodeData] = []
+
+    for node in nodes {
+        if case .divider = node {
+            if !current.isEmpty {
+                groups.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+            continue
+        }
+        current.append(node)
+    }
+
+    if !current.isEmpty {
+        groups.append(current)
+    }
+
+    return groups
+}
 #endif
 
 #if canImport(AppKit)
@@ -334,25 +338,3 @@ private func appKitMenuImage(named name: String?) -> NSImage? {
     return NSImage(systemSymbolName: name, accessibilityDescription: nil)
 }
 #endif
-
-private func splitMenuGroups(_ nodes: [MenuNodeData]) -> [[MenuNodeData]] {
-    var groups: [[MenuNodeData]] = []
-    var current: [MenuNodeData] = []
-
-    for node in nodes {
-        if case .divider = node {
-            if !current.isEmpty {
-                groups.append(current)
-                current.removeAll(keepingCapacity: true)
-            }
-            continue
-        }
-        current.append(node)
-    }
-
-    if !current.isEmpty {
-        groups.append(current)
-    }
-
-    return groups
-}

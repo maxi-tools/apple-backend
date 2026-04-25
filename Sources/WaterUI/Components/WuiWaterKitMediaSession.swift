@@ -36,20 +36,20 @@ private func waterkitAudioAppleMediaSessionInit() -> Int32
 
 @_silgen_name("waterkit_audio_apple_media_session_set_metadata")
 private func waterkitAudioAppleMediaSessionSetMetadata(
-    _ title: UnsafePointer<CChar>?,
-    _ artist: UnsafePointer<CChar>?,
-    _ album: UnsafePointer<CChar>?,
-    _ artworkURL: UnsafePointer<CChar>?,
-    _ durationSeconds: Double
+    _: UnsafePointer<CChar>?,
+    _: UnsafePointer<CChar>?,
+    _: UnsafePointer<CChar>?,
+    _: UnsafePointer<CChar>?,
+    _: Double
 ) -> Int32
 
 @_silgen_name("waterkit_audio_apple_media_session_set_playback_state")
 private func waterkitAudioAppleMediaSessionSetPlaybackState(
-    _ status: UInt8,
-    _ positionSeconds: Double,
-    _ rate: Double,
-    _ nextEnabled: Bool,
-    _ previousEnabled: Bool
+    _: UInt8,
+    _: Double,
+    _: Double,
+    _: Bool,
+    _: Bool
 ) -> Int32
 
 @_silgen_name("waterkit_audio_apple_media_session_request_audio_focus")

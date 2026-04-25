@@ -29,12 +29,6 @@ final class WuiFocusObservation: NSObject {
         self.cancelImpl = cancel
     }
 
-    func cancel() {
-        guard !isCancelled else { return }
-        isCancelled = true
-        cancelImpl()
-    }
-
     deinit {
         if !isCancelled {
             isCancelled = true

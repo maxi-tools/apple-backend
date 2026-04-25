@@ -17,14 +17,14 @@ private struct WuiNavigationSplitLayoutFFI {
 @_silgen_name("waterui_split_navigation_container_id")
 private func waterui_split_navigation_container_id() -> CWaterUI.WuiTypeId
 @_silgen_name("waterui_force_as_split_navigation_container")
-private func waterui_force_as_split_navigation_container(_ view: OpaquePointer) -> WuiNavigationSplitLayoutFFI
+private func waterui_force_as_split_navigation_container(_: OpaquePointer) -> WuiNavigationSplitLayoutFFI
 @_silgen_name("waterui_split_navigation_detail_content")
 private func waterui_split_navigation_detail_content(
-    _ detail: OpaquePointer?,
-    _ selected: CWaterUI.WuiId
+    _: OpaquePointer?,
+    _: CWaterUI.WuiId
 ) -> CWaterUI.WuiNavigationView
 @_silgen_name("waterui_drop_split_navigation_detail")
-private func waterui_drop_split_navigation_detail(_ detail: OpaquePointer?)
+private func waterui_drop_split_navigation_detail(_: OpaquePointer?)
 
 @MainActor
 final class WuiNavigationSplitView: PlatformView, WuiComponent {

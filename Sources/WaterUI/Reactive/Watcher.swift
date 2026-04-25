@@ -325,22 +325,6 @@ func makeIdWatcher(_ f: @escaping (WuiId, WuiWatcherMetadata) -> Void) -> Opaque
 }
 
 @MainActor
-func makeDateWatcher(_ f: @escaping (CWaterUI.WuiDate, WuiWatcherMetadata) -> Void) -> OpaquePointer {
-    let data = wrap(f)
-    let call: @convention(c) (UnsafeMutableRawPointer?, CWaterUI.WuiDate, OpaquePointer?) -> Void = {
-        data, value, metadata in
-        callWrapper(data, value, metadata)
-    }
-    let drop: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
-        dropWrapper($0, CWaterUI.WuiDate.self)
-    }
-    guard let watcher = waterui_new_watcher_date(data, call, drop) else {
-        fatalError("Failed to create date watcher")
-    }
-    return watcher
-}
-
-@MainActor
 func makeDateTimeWatcher(_ f: @escaping (CWaterUI.WuiDateTime, WuiWatcherMetadata) -> Void) -> OpaquePointer {
     let data = wrap(f)
     let call: @convention(c) (UnsafeMutableRawPointer?, CWaterUI.WuiDateTime, OpaquePointer?) -> Void = {

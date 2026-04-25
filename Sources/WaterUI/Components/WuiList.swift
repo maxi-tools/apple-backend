@@ -311,7 +311,6 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
     func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
         return UITableView.automaticDimension
     }
-
 }
 
 // MARK: - WuiListCell

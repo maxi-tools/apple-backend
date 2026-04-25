@@ -87,15 +87,6 @@ final class WuiDatePicker: PlatformView, WuiComponent {
     override var isFlipped: Bool { true }
     #endif
 
-    private var showsSeconds: Bool {
-        switch pickerType {
-        case WuiDatePickerType_HourMinuteAndSecond, WuiDatePickerType_DateHourMinuteAndSecond:
-            true
-        default:
-            false
-        }
-    }
-
     private func configureSubviews() {
         labelView.translatesAutoresizingMaskIntoConstraints = false
         datePicker.translatesAutoresizingMaskIntoConstraints = false
@@ -158,6 +149,17 @@ final class WuiDatePicker: PlatformView, WuiComponent {
         secondsStepper.isHidden = !showsSeconds
         #endif
     }
+
+    #if canImport(UIKit)
+    private var showsSeconds: Bool {
+        switch pickerType {
+        case WuiDatePickerType_HourMinuteAndSecond, WuiDatePickerType_DateHourMinuteAndSecond:
+            true
+        default:
+            false
+        }
+    }
+    #endif
 
     private func configureDatePicker(range: CWaterUI.WuiRange_WuiDateTime) {
         #if canImport(UIKit)

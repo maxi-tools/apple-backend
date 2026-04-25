@@ -22,32 +22,32 @@ private struct WuiMultiDatePickerFFI {
 @_silgen_name("waterui_multi_date_picker_id")
 private func waterui_multi_date_picker_id() -> CWaterUI.WuiTypeId
 @_silgen_name("waterui_force_as_multi_date_picker")
-private func waterui_force_as_multi_date_picker(_ view: OpaquePointer) -> WuiMultiDatePickerFFI
+private func waterui_force_as_multi_date_picker(_: OpaquePointer) -> WuiMultiDatePickerFFI
 @_silgen_name("waterui_read_binding_date_vec")
-private func waterui_read_binding_date_vec(_ binding: OpaquePointer?) -> CWaterUI.WuiArray
+private func waterui_read_binding_date_vec(_: OpaquePointer?) -> CWaterUI.WuiArray
 @_silgen_name("waterui_watch_binding_date_vec")
 private func waterui_watch_binding_date_vec(
-    _ binding: OpaquePointer?,
-    _ watcher: OpaquePointer?
+    _: OpaquePointer?,
+    _: OpaquePointer?
 ) -> OpaquePointer?
 @_silgen_name("waterui_set_binding_date_vec")
-private func waterui_set_binding_date_vec(_ binding: OpaquePointer?, _ value: CWaterUI.WuiArray)
+private func waterui_set_binding_date_vec(_: OpaquePointer?, _: CWaterUI.WuiArray)
 @_silgen_name("waterui_drop_binding_date_vec")
-private func waterui_drop_binding_date_vec(_ binding: OpaquePointer?)
+private func waterui_drop_binding_date_vec(_: OpaquePointer?)
 @_silgen_name("waterui_read_computed_date_vec")
-private func waterui_read_computed_date_vec(_ computed: OpaquePointer?) -> CWaterUI.WuiArray
+private func waterui_read_computed_date_vec(_: OpaquePointer?) -> CWaterUI.WuiArray
 @_silgen_name("waterui_watch_computed_date_vec")
 private func waterui_watch_computed_date_vec(
-    _ computed: OpaquePointer?,
-    _ watcher: OpaquePointer?
+    _: OpaquePointer?,
+    _: OpaquePointer?
 ) -> OpaquePointer?
 @_silgen_name("waterui_drop_computed_date_vec")
-private func waterui_drop_computed_date_vec(_ computed: OpaquePointer?)
+private func waterui_drop_computed_date_vec(_: OpaquePointer?)
 @_silgen_name("waterui_new_watcher_date_vec")
 private func waterui_new_watcher_date_vec(
-    _ data: UnsafeMutableRawPointer?,
-    _ call: (@convention(c) (UnsafeMutableRawPointer?, CWaterUI.WuiArray, OpaquePointer?) -> Void)?,
-    _ drop: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?
+    _: UnsafeMutableRawPointer?,
+    _: (@convention(c) (UnsafeMutableRawPointer?, CWaterUI.WuiArray, OpaquePointer?) -> Void)?,
+    _: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?
 ) -> OpaquePointer?
 
 @MainActor
@@ -318,7 +318,6 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
         }
         return .default(color: .secondaryLabel, size: .small)
     }
-    #endif
 
     private func dateFromComponents(_ components: DateComponents) -> CWaterUI.WuiDate? {
         guard let year = components.year,
@@ -329,6 +328,7 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
         }
         return CWaterUI.WuiDate(year: Int32(year), month: UInt8(month), day: UInt8(day))
     }
+    #endif
 
     private func toDate(_ date: CWaterUI.WuiDate) -> Date {
         var components = DateComponents()

@@ -124,7 +124,9 @@ class WuiTextBase: PlatformView {
             path,
             nil
         )
-        let lines = CTFrameGetLines(frame) as! [CTLine]
+        guard let lines = CTFrameGetLines(frame) as? [CTLine] else {
+            fatalError("CoreText returned a CTFrame line array with non-CTLine elements.")
+        }
         guard !lines.isEmpty else {
             return (size, nil, nil)
         }
@@ -164,7 +166,6 @@ class WuiTextBase: PlatformView {
     #if canImport(AppKit)
     override var isFlipped: Bool { true }
     #endif
-
 
     // MARK: - Text Updates
 

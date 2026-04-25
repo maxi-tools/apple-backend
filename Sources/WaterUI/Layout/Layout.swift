@@ -12,19 +12,19 @@ enum LazyStackAxis: Int32 {
 }
 
 @_silgen_name("waterui_layout_lazy_stack_axis")
-private func waterui_layout_lazy_stack_axis_shim(_ layout: OpaquePointer) -> Int32
+private func waterui_layout_lazy_stack_axis_shim(_: OpaquePointer) -> Int32
 
 @_silgen_name("waterui_layout_lazy_stack_spacing")
-private func waterui_layout_lazy_stack_spacing_shim(_ layout: OpaquePointer) -> Float
+private func waterui_layout_lazy_stack_spacing_shim(_: OpaquePointer) -> Float
 
 @_silgen_name("waterui_layout_lazy_stack_horizontal_alignment")
 private func waterui_layout_lazy_stack_horizontal_alignment_shim(
-    _ layout: OpaquePointer
+    _: OpaquePointer
 ) -> CWaterUI.WuiHorizontalAlignment
 
 @_silgen_name("waterui_layout_lazy_stack_vertical_alignment")
 private func waterui_layout_lazy_stack_vertical_alignment_shim(
-    _ layout: OpaquePointer
+    _: OpaquePointer
 ) -> CWaterUI.WuiVerticalAlignment
 
 // MARK: - Proposal and Layout Types
@@ -134,11 +134,6 @@ public struct WuiHorizontalGuide {
     var alignment: CWaterUI.WuiHorizontalAlignment
     var value: Float
 
-    init(alignment: CWaterUI.WuiHorizontalAlignment, value: Float) {
-        self.alignment = alignment
-        self.value = value
-    }
-
     init(_ raw: CWaterUI.WuiHorizontalGuide) {
         self.alignment = raw.alignment
         self.value = raw.value
@@ -234,14 +229,6 @@ final class WuiLayout {
     ) -> WuiViewDimensions {
         let dimensions = waterui_layout_measure(inner, proposal.toCStruct(), children.ffiArray)
         return WuiViewDimensions(dimensions)
-    }
-
-    /// Calculate the size this layout wants given a proposal.
-    func sizeThatFits(
-        proposal: WuiProposalSize,
-        children: CachedSubViewArray
-    ) -> CGSize {
-        measure(proposal: proposal, children: children).cgSize
     }
 
     /// Place children within the given bounds.

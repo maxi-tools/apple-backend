@@ -176,10 +176,6 @@ final class WuiContainer: PlatformView, WuiComponent {
         setChildren(children)
     }
 
-    func getViewId(at index: Int) -> WuiId {
-        anyViews.getId(at: index)
-    }
-
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
         if let lazyStack {
             return lazyStackSizeThatFits(proposal, config: lazyStack)
@@ -451,7 +447,7 @@ final class WuiContainer: PlatformView, WuiComponent {
         var cursor = window.leadingOffset
         var needsInvalidation = false
 
-        for index in window.start..<window.end {
+        for index in window.start ..< window.end {
             let id = itemIds[index]
             let child = renderedChildren[id] ?? anyViews.getView(at: index, env: env)
             if renderedChildren[id] == nil {

@@ -196,7 +196,6 @@ extension WuiComputed where T == CWaterUI.WuiArray_WuiMenuItem {
     }
 }
 
-
 extension WuiComputed where T == WuiCursorStyle {
     convenience init(_ inner: OpaquePointer) {
         self.init(

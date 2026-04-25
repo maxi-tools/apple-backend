@@ -15,14 +15,14 @@ private typealias WaterKitVideoSetExternalRenderingFn = @convention(c) (
 
 @_silgen_name("waterkit_video_apple_register_gpu_surface_host")
 private func waterkitVideoAppleRegisterGpuSurfaceHost(
-    _ hostId: UInt64,
-    _ userData: UnsafeMutableRawPointer?,
-    _ renderFrame: WaterKitVideoRenderFrameFn,
-    _ setExternalRendering: WaterKitVideoSetExternalRenderingFn
+    _: UInt64,
+    _: UnsafeMutableRawPointer?,
+    _: WaterKitVideoRenderFrameFn,
+    _: WaterKitVideoSetExternalRenderingFn
 )
 
 @_silgen_name("waterkit_video_apple_unregister_gpu_surface_host")
-private func waterkitVideoAppleUnregisterGpuSurfaceHost(_ hostId: UInt64)
+private func waterkitVideoAppleUnregisterGpuSurfaceHost(_: UInt64)
 
 private func wuiWaterKitVideoPictureInPictureRenderFrame(
     userData: UnsafeMutableRawPointer?,
