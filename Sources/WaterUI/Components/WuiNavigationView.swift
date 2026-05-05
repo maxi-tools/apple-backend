@@ -108,14 +108,41 @@ final class WuiNavigationView: PlatformView, WuiComponent {
         navBarView.translatesAutoresizingMaskIntoConstraints = true
         addSubview(navBarView)
 
+        // Resolve the chrome background from the env's Background slot so it
+        // tracks the installed theme (including dark mode in offscreen
+        // preview captures, where dynamic system colors don't always
+        // re-evaluate against the current NSAppearance).
+        let navBackgroundComputed: WuiComputed<WuiResolvedColor>? =
+            waterui_theme_color(env.inner, WuiColorSlot_Background)
+                .map { WuiComputed<WuiResolvedColor>($0) }
+        let borderBackgroundComputed: WuiComputed<WuiResolvedColor>? =
+            waterui_theme_color(env.inner, WuiColorSlot_Border)
+                .map { WuiComputed<WuiResolvedColor>($0) }
+
         #if canImport(UIKit)
-        navBarView.backgroundColor = .systemBackground
-        borderView.backgroundColor = .separator
+        if let resolved = navBackgroundComputed?.value {
+            navBarView.backgroundColor = resolved.toUIColor()
+        } else {
+            navBarView.backgroundColor = .systemBackground
+        }
+        if let resolved = borderBackgroundComputed?.value {
+            borderView.backgroundColor = resolved.toUIColor()
+        } else {
+            borderView.backgroundColor = .separator
+        }
         #elseif canImport(AppKit)
         navBarView.wantsLayer = true
-        navBarView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        if let resolved = navBackgroundComputed?.value {
+            navBarView.layer?.backgroundColor = resolved.toNSColor().cgColor
+        } else {
+            navBarView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        }
         borderView.wantsLayer = true
-        borderView.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        if let resolved = borderBackgroundComputed?.value {
+            borderView.layer?.backgroundColor = resolved.toNSColor().cgColor
+        } else {
+            borderView.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        }
         #endif
 
         titleView.translatesAutoresizingMaskIntoConstraints = true
