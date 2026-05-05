@@ -179,9 +179,16 @@ final class WuiNavigationView: PlatformView, WuiComponent {
 
     private func setupColorWatcher(_ color: WuiComputed<WuiResolvedColor>?) {
         guard let color else { return }
-        applyBarColor(color.value)
+        // The Bar's color signal defaults to fully-transparent as a sentinel
+        // meaning "use platform default". Skip applying it in that case so
+        // the env Background fill we picked up in configureNavBar() stands.
+        let initial = color.value
+        if !Self.isTransparentSentinel(initial) {
+            applyBarColor(initial)
+        }
         colorWatcher = color.watch { [weak self] value, metadata in
             guard let self else { return }
+            guard !Self.isTransparentSentinel(value) else { return }
             withPlatformAnimation(metadata) {
                 self.applyBarColor(value)
             }
@@ -194,6 +201,12 @@ final class WuiNavigationView: PlatformView, WuiComponent {
         hiddenWatcher = hidden.watch { [weak self] value, _ in
             self?.applyBarHidden(value)
         }
+    }
+
+    /// Returns true for the "use platform default" sentinel that the Rust
+    /// `Bar` defaults to (`Color::transparent()` with full transparency).
+    private static func isTransparentSentinel(_ color: WuiResolvedColor) -> Bool {
+        color.opacity <= 0.0 && color.red == 0.0 && color.green == 0.0 && color.blue == 0.0
     }
 
     private func applyBarColor(_ color: WuiResolvedColor) {
