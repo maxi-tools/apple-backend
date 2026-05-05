@@ -97,7 +97,7 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
         self.contents = WuiAnyViews(ffiList.contents)
         self.onDeletePtr = ffiList.on_delete
         self.onMovePtr = ffiList.on_move
-        super.init(frame: .zero, style: .plain)
+        super.init(frame: .zero, style: .insetGrouped)
 
         dataSource = self
         delegate = self
