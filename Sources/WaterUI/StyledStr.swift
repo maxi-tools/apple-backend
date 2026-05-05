@@ -100,8 +100,21 @@ struct WuiStyledChunk {
             .font: font
         ]
 
+        let resolvedForeground: WuiResolvedColor?
         if let foreground = style.foreground {
-            let resolvedColor = foreground.resolve(in: env).value
+            resolvedForeground = foreground.resolve(in: env).value
+        } else {
+            // Fall back to env's Foreground slot so the `.foreground()` view
+            // modifier (which installs a ForegroundOverride) takes effect on
+            // text that doesn't carry an explicit color.
+            let computedPtr = waterui_theme_color(env.inner, WuiColorSlot_Foreground)
+            if let computedPtr {
+                resolvedForeground = WuiComputed<WuiResolvedColor>(computedPtr).value
+            } else {
+                resolvedForeground = nil
+            }
+        }
+        if let resolvedColor = resolvedForeground {
             #if canImport(UIKit)
             attributes[.foregroundColor] = resolvedColor.toUIColor()
             #elseif canImport(AppKit)
