@@ -50,7 +50,7 @@ final class WuiSlider: PlatformView, WuiComponent {
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let stretchAxis = WuiStretchAxis(waterui_view_stretch_axis(anyview))
         let ffiSlider: CWaterUI.WuiSlider = waterui_force_as_slider(anyview)
-        let labelView = WuiAnyView(anyview: ffiSlider.label, env: env)
+        let labelView = WuiAnyView(anyview: ffiSlider.label.view, env: env)
         let minLabelView = WuiAnyView(anyview: ffiSlider.min_value_label, env: env)
         let maxLabelView = WuiAnyView(anyview: ffiSlider.max_value_label, env: env)
         let binding = WuiBinding<Double>(ffiSlider.value)

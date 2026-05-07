@@ -47,7 +47,7 @@ final class WuiSecureField: PlatformView, WuiComponent {
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let stretchAxis = WuiStretchAxis(waterui_view_stretch_axis(anyview))
         let ffiSecureField: CWaterUI.WuiSecureField = waterui_force_as_secure_field(anyview)
-        let labelView = WuiAnyView(anyview: ffiSecureField.label, env: env)
+        let labelView = WuiAnyView(anyview: ffiSecureField.label.view, env: env)
         let binding = WuiBinding<WuiStr>(secure: ffiSecureField.value)
         self.init(
             stretchAxis: stretchAxis,

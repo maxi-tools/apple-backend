@@ -79,7 +79,7 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let ffiPicker = waterui_force_as_multi_date_picker(anyview)
         self.init(
-            label: WuiAnyView(anyview: ffiPicker.label!, env: env),
+            label: WuiAnyView(anyview: ffiPicker.label.view, env: env),
             binding: makeDateArrayBinding(ffiPicker.value!),
             decorated: makeDateArrayComputed(ffiPicker.decorated!),
             range: ffiPicker.range

@@ -64,7 +64,7 @@ final class WuiTextField: PlatformView, WuiComponent {
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let stretchAxis = WuiStretchAxis(waterui_view_stretch_axis(anyview))
         let ffiTextField: CWaterUI.WuiTextField = waterui_force_as_text_field(anyview)
-        let labelView = WuiAnyView(anyview: ffiTextField.label, env: env)
+        let labelView = WuiAnyView(anyview: ffiTextField.label.view, env: env)
         let binding = WuiBinding<WuiStyledStr>(ffiTextField.value)
         let prompt = WuiComputed<WuiStyledStr>(ffiTextField.prompt.content)
         let selectionMenu = ffiTextField.selection_menu.map {

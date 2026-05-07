@@ -48,7 +48,7 @@ final class WuiToggle: PlatformView, WuiComponent {
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let ffiToggle: CWaterUI.WuiToggle = waterui_force_as_toggle(anyview)
-        let labelView = WuiAnyView(anyview: ffiToggle.label, env: env)
+        let labelView = WuiAnyView(anyview: ffiToggle.label.view, env: env)
         let binding: WuiBinding<Bool> = WuiBinding(ffiToggle.toggle)
         let style = ToggleStyle(from: ffiToggle.style)
         self.init(label: labelView, binding: binding, style: style)

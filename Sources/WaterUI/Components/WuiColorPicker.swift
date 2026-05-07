@@ -33,7 +33,7 @@ final class WuiColorPicker: PlatformView, WuiComponent {
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let ffiColorPicker: CWaterUI.WuiColorPicker = waterui_force_as_color_picker(anyview)
-        let labelView = WuiAnyView(anyview: ffiColorPicker.label, env: env)
+        let labelView = WuiAnyView(anyview: ffiColorPicker.label.view, env: env)
         let binding = WuiBinding<OpaquePointer>.color(ffiColorPicker.value)
         let supportAlpha = ffiColorPicker.support_alpha
         let supportHdr = ffiColorPicker.support_hdr
@@ -208,7 +208,7 @@ final class WuiColorPicker: PlatformView, WuiComponent {
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let ffiColorPicker: CWaterUI.WuiColorPicker = waterui_force_as_color_picker(anyview)
-        let labelView = WuiAnyView(anyview: ffiColorPicker.label, env: env)
+        let labelView = WuiAnyView(anyview: ffiColorPicker.label.view, env: env)
         let binding = WuiBinding<OpaquePointer>.color(ffiColorPicker.value)
         let supportAlpha = ffiColorPicker.support_alpha
         let supportHdr = ffiColorPicker.support_hdr

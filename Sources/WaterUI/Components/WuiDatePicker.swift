@@ -36,7 +36,7 @@ final class WuiDatePicker: PlatformView, WuiComponent {
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let ffiDatePicker: CWaterUI.WuiDatePicker = waterui_force_as_date_picker(anyview)
-        let labelView = WuiAnyView(anyview: ffiDatePicker.label, env: env)
+        let labelView = WuiAnyView(anyview: ffiDatePicker.label.view, env: env)
         let binding = WuiBinding<CWaterUI.WuiDateTime>(ffiDatePicker.value)
         self.init(label: labelView, binding: binding, pickerType: ffiDatePicker.ty, range: ffiDatePicker.range)
     }

@@ -42,7 +42,7 @@ final class WuiStepper: PlatformView, WuiComponent {
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let ffiStepper: CWaterUI.WuiStepper = waterui_force_as_stepper(anyview)
-        let labelView = WuiAnyView(anyview: ffiStepper.label, env: env)
+        let labelView = WuiAnyView(anyview: ffiStepper.label.view, env: env)
         let binding = WuiBinding<Int32>(ffiStepper.value)
         let step = WuiComputed<Int32>(ffiStepper.step)
         self.init(label: labelView, binding: binding, step: step)

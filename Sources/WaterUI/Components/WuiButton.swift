@@ -45,11 +45,13 @@ final class WuiButton: PlatformView, WuiComponent {
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
         let ffiButton: CWaterUI.WuiButton = waterui_force_as_button(anyview)
-        let labelView = WuiAnyView(anyview: ffiButton.label, env: env)
+        let labelView = WuiAnyView(anyview: ffiButton.label.view, env: env)
         let action = Action(inner: ffiButton.action, env: env)
-        let accessibilityLabel = ffiButton.accessibility_label.map {
-            WuiComputed<WuiStyledStr>(OpaquePointer(UnsafeMutableRawPointer($0)))
-        }
+        // Pull the spoken accessibility text from WuiLabel.accessibility_label
+        // (always non-null in the new API; backends should always announce it).
+        let accessibilityLabel = WuiComputed<WuiStyledStr>(
+            OpaquePointer(UnsafeMutableRawPointer(ffiButton.label.accessibility_label))
+        )
         self.init(
             label: labelView,
             action: action,
