@@ -285,8 +285,19 @@ final class WuiTextField: PlatformView, WuiComponent {
         textView.textContainer.lineFragmentPadding = 0
         textView.layer.cornerRadius = 10
         textView.layer.borderWidth = 1
-        textView.layer.borderColor = UIColor.separator.cgColor
-        textView.backgroundColor = UIColor.secondarySystemBackground
+        // Theme-driven chrome: border = `Border` slot, fill =
+        // `SurfaceVariant` slot. `.separator` / `.secondarySystemBackground`
+        // remain as legacy fallbacks when no slot is installed.
+        if let borderPtr = waterui_theme_color(env.inner, WuiColorSlot_Border) {
+            textView.layer.borderColor = WuiComputed<WuiResolvedColor>(borderPtr).value.toUIColor().cgColor
+        } else {
+            textView.layer.borderColor = UIColor.separator.cgColor
+        }
+        if let fillPtr = waterui_theme_color(env.inner, WuiColorSlot_SurfaceVariant) {
+            textView.backgroundColor = WuiComputed<WuiResolvedColor>(fillPtr).value.toUIColor()
+        } else {
+            textView.backgroundColor = UIColor.secondarySystemBackground
+        }
 
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
         placeholderLabel.numberOfLines = 1

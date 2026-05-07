@@ -197,8 +197,14 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
         // Register a reusable cell class
         register(WuiListCell.self, forCellReuseIdentifier: WuiListCell.reuseIdentifier)
 
-        // Allow cells to size themselves
-        rowHeight = UITableView.automaticDimension
+        // Drive row heights through `heightForRowAt` against the measured
+        // content (Layout/SubView protocol) instead of relying on
+        // `automaticDimension`. The automatic path is unreliable in
+        // offscreen captures and also forces Auto Layout to chase its tail
+        // when the cell content reports its height through
+        // `intrinsicContentSize`. Estimated height is kept low so the table
+        // doesn't pre-allocate huge content rects before the real height
+        // arrives.
         estimatedRowHeight = 44
 
         // Setup editing state if provided
@@ -409,7 +415,18 @@ final class WuiList: UITableView, WuiComponent, UITableViewDataSource, UITableVi
     // MARK: - UITableViewDelegate
 
     func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-        return UITableView.automaticDimension
+        let flat = flatIndex(for: indexPath)
+        let item = resolveListItem(from: contents, at: flat, env: env)
+        let width = tableView.bounds.width
+        let proposal = WuiProposalSize(
+            width: width > 0 ? Float(width) : nil,
+            height: nil
+        )
+        let size = item.view.sizeThatFits(proposal)
+        // Apple's inset-grouped table style uses a 44pt minimum touch
+        // target — keep that floor when the measured content is shorter
+        // (single-line rows, dividers, etc).
+        return max(size.height, 44)
     }
 }
 
@@ -582,8 +599,13 @@ final class WuiList: NSScrollView, WuiComponent, NSTableViewDataSource, NSTableV
         tableView.headerView = nil
         tableView.dataSource = self
         tableView.delegate = self
+        // Drive row heights through `heightOfRow` against the measured
+        // content (Layout/SubView protocol). `usesAutomaticRowHeights = true`
+        // is unreliable in offscreen captures because it tries to derive
+        // height from the row view's Auto Layout fitting size, which can
+        // pin to a single-line intrinsic when wrapped text hasn't been
+        // re-measured at the table width yet.
         tableView.rowHeight = 44
-        tableView.usesAutomaticRowHeights = true
         tableView.style = .inset
         tableView.backgroundColor = .clear
         tableView.selectionHighlightStyle = .regular

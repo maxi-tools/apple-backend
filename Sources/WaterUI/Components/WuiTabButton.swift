@@ -10,14 +10,18 @@ import AppKit
 @MainActor
 final class WuiTabButton: UIControl {
     private let labelView: WuiAnyView
+    private let env: WuiEnvironment
+    private var selectedColorWatcher: WatcherGuard?
+    private var resolvedSelectedColor: UIColor = .secondarySystemBackground
     var onTap: (() -> Void)?
 
     override var isSelected: Bool {
         didSet { updateAppearance() }
     }
 
-    init(labelView: WuiAnyView) {
+    init(labelView: WuiAnyView, env: WuiEnvironment) {
         self.labelView = labelView
+        self.env = env
         super.init(frame: .zero)
 
         isAccessibilityElement = true
@@ -31,6 +35,7 @@ final class WuiTabButton: UIControl {
         layer.cornerRadius = 10
         layer.masksToBounds = true
 
+        installSelectedColorWatcher()
         updateAppearance()
     }
 
@@ -54,15 +59,34 @@ final class WuiTabButton: UIControl {
         return CGSize(width: labelSize.width + 16, height: max(labelSize.height + 12, 36))
     }
 
+    private func installSelectedColorWatcher() {
+        // Theme-driven selected background: pick the `Surface` slot
+        // (elevated card / sheet color) so it reads as a chip on top of
+        // the page background regardless of the active color scheme.
+        guard let computedPtr = waterui_theme_color(env.inner, WuiColorSlot_Surface) else {
+            return
+        }
+        let signal = WuiComputed<WuiResolvedColor>(computedPtr)
+        resolvedSelectedColor = signal.value.toUIColor()
+        selectedColorWatcher = signal.watch { [weak self] color, _ in
+            guard let self else { return }
+            self.resolvedSelectedColor = color.toUIColor()
+            self.updateAppearance()
+        }
+    }
+
     private func updateAppearance() {
-        backgroundColor = isSelected ? UIColor.secondarySystemBackground : UIColor.clear
+        backgroundColor = isSelected ? resolvedSelectedColor : UIColor.clear
     }
 }
 #elseif canImport(AppKit)
 @MainActor
 final class WuiTabButton: NSView {
     private let labelView: WuiAnyView
+    private let env: WuiEnvironment
     private let clickRecognizer: NSClickGestureRecognizer
+    private var selectedColorWatcher: WatcherGuard?
+    private var resolvedSelectedColor: NSColor = NSColor.selectedControlColor.withAlphaComponent(0.15)
 
     var onClick: (() -> Void)?
 
@@ -70,8 +94,9 @@ final class WuiTabButton: NSView {
         didSet { updateAppearance() }
     }
 
-    init(labelView: WuiAnyView) {
+    init(labelView: WuiAnyView, env: WuiEnvironment) {
         self.labelView = labelView
+        self.env = env
         self.clickRecognizer = NSClickGestureRecognizer()
         super.init(frame: .zero)
 
@@ -86,6 +111,7 @@ final class WuiTabButton: NSView {
         labelView.translatesAutoresizingMaskIntoConstraints = true
         addSubview(labelView)
 
+        installSelectedColorWatcher()
         updateAppearance()
     }
 
@@ -111,8 +137,21 @@ final class WuiTabButton: NSView {
         return NSSize(width: labelSize.width + 16, height: max(labelSize.height + 12, 28))
     }
 
+    private func installSelectedColorWatcher() {
+        guard let computedPtr = waterui_theme_color(env.inner, WuiColorSlot_Surface) else {
+            return
+        }
+        let signal = WuiComputed<WuiResolvedColor>(computedPtr)
+        resolvedSelectedColor = signal.value.toNSColor()
+        selectedColorWatcher = signal.watch { [weak self] color, _ in
+            guard let self else { return }
+            self.resolvedSelectedColor = color.toNSColor()
+            self.updateAppearance()
+        }
+    }
+
     private func updateAppearance() {
-        let color = isSelected ? NSColor.selectedControlColor.withAlphaComponent(0.15) : NSColor.clear
+        let color = isSelected ? resolvedSelectedColor : NSColor.clear
         layer?.backgroundColor = color.cgColor
     }
 }

@@ -141,6 +141,26 @@ class WuiTextBase: PlatformView {
         textMeasurement(proposal).size
     }
 
+    #if canImport(UIKit)
+    /// `UILabel.intrinsicContentSize` reports a single-line height unless
+    /// `preferredMaxLayoutWidth` is set. When the host wraps us in Auto
+    /// Layout (e.g. a `UITableViewCell`), our outer bounds already encode
+    /// the available width — propagate it so the underlying label wraps
+    /// instead of clipping.
+    private var lastLabelMaxWidth: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let width = bounds.width
+        if width > 0, width != lastLabelMaxWidth {
+            lastLabelMaxWidth = width
+            label.preferredMaxLayoutWidth = width
+            label.invalidateIntrinsicContentSize()
+            invalidateLayoutHierarchy()
+        }
+    }
+    #endif
+
     func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions {
         let measurement = textMeasurement(proposal)
         var verticalGuides: [WuiVerticalGuide] = []

@@ -124,7 +124,7 @@ final class WuiTabs: PlatformView, WuiComponent {
         addSubview(tabBarContainer)
 
         tabButtons = tabs.enumerated().map { index, tab in
-            let button = WuiTabButton(labelView: tab.label)
+            let button = WuiTabButton(labelView: tab.label, env: env)
             button.onTap = { [weak self] in
                 self?.showTab(at: index)
             }
@@ -136,7 +136,7 @@ final class WuiTabs: PlatformView, WuiComponent {
         addSubview(tabBarContainer)
 
         tabButtons = tabs.enumerated().map { index, tab in
-            let button = WuiTabButton(labelView: tab.label)
+            let button = WuiTabButton(labelView: tab.label, env: env)
             button.onClick = { [weak self] in
                 self?.showTab(at: index)
             }

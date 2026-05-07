@@ -7,22 +7,8 @@ import UIKit
 import AppKit
 #endif
 
-private struct WuiDateRangeFFI {
-    var start: CWaterUI.WuiDate
-    var end: CWaterUI.WuiDate
-}
-
-private struct WuiMultiDatePickerFFI {
-    var label: OpaquePointer?
-    var value: OpaquePointer?
-    var range: WuiDateRangeFFI
-    var decorated: OpaquePointer?
-}
-
 @_silgen_name("waterui_multi_date_picker_id")
 private func waterui_multi_date_picker_id() -> CWaterUI.WuiTypeId
-@_silgen_name("waterui_force_as_multi_date_picker")
-private func waterui_force_as_multi_date_picker(_: OpaquePointer) -> WuiMultiDatePickerFFI
 @_silgen_name("waterui_read_binding_date_vec")
 private func waterui_read_binding_date_vec(_: OpaquePointer?) -> CWaterUI.WuiArray
 @_silgen_name("waterui_watch_binding_date_vec")
@@ -57,7 +43,7 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
     private let labelView: WuiAnyView
     private let binding: WuiBinding<CWaterUI.WuiArray>
     private let decorated: WuiComputed<CWaterUI.WuiArray>
-    private let range: WuiDateRangeFFI
+    private let range: CWaterUI.WuiRange_WuiDate
     private let calendar = Calendar(identifier: .gregorian)
     private var bindingWatcher: WatcherGuard?
     private var decoratedWatcher: WatcherGuard?
@@ -77,7 +63,7 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
     #endif
 
     convenience init(anyview: OpaquePointer, env: WuiEnvironment) {
-        let ffiPicker = waterui_force_as_multi_date_picker(anyview)
+        let ffiPicker: CWaterUI.WuiMultiDatePicker = waterui_force_as_multi_date_picker(anyview)
         self.init(
             label: WuiAnyView(anyview: ffiPicker.label.view, env: env),
             binding: makeDateArrayBinding(ffiPicker.value!),
@@ -90,7 +76,7 @@ final class WuiMultiDatePicker: PlatformView, WuiComponent {
         label: WuiAnyView,
         binding: WuiBinding<CWaterUI.WuiArray>,
         decorated: WuiComputed<CWaterUI.WuiArray>,
-        range: WuiDateRangeFFI
+        range: CWaterUI.WuiRange_WuiDate
     ) {
         self.labelView = label
         self.binding = binding

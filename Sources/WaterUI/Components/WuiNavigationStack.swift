@@ -23,13 +23,16 @@ import AppKit
 final class WuiContentViewController: UIViewController {
     private let contentView: UIView
     private let barState: WuiNavigationBarState?
+    private let env: WuiEnvironment
     private var colorWatcher: WatcherGuard?
     private var hiddenWatcher: WatcherGuard?
+    private var backgroundWatcher: WatcherGuard?
     private var searchCoordinator: WuiNavigationSearchCoordinator?
 
-    init(contentView: UIView, barState: WuiNavigationBarState?) {
+    init(contentView: UIView, barState: WuiNavigationBarState?, env: WuiEnvironment) {
         self.contentView = contentView
         self.barState = barState
+        self.env = env
         super.init(nibName: nil, bundle: nil)
 
         edgesForExtendedLayout = .all
@@ -43,11 +46,28 @@ final class WuiContentViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemBackground
+        // Theme-driven page background — read the `Background` slot from
+        // the environment so dark mode and custom themes apply without
+        // hand-tuning. `.systemBackground` is the legacy fallback when
+        // no slot is installed (matches the transparent-color sentinel).
+        applyThemedBackground()
         contentView.translatesAutoresizingMaskIntoConstraints = true
         view.addSubview(contentView)
         applyNavigationChrome()
         startWatching()
+    }
+
+    private func applyThemedBackground() {
+        guard let computedPtr = waterui_theme_color(env.inner, WuiColorSlot_Background) else {
+            view.backgroundColor = .systemBackground
+            return
+        }
+        let signal = WuiComputed<WuiResolvedColor>(computedPtr)
+        view.backgroundColor = signal.value.toUIColor()
+        backgroundWatcher = signal.watch { [weak self] color, _ in
+            guard let self else { return }
+            self.view.backgroundColor = color.toUIColor()
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -369,7 +389,7 @@ final class WuiNavigationStack: PlatformView, WuiComponent {
         barState: WuiNavigationBarState?,
         displayMode: UINavigationItem.LargeTitleDisplayMode = .automatic
     ) -> UIViewController {
-        let vc = WuiContentViewController(contentView: view, barState: barState)
+        let vc = WuiContentViewController(contentView: view, barState: barState, env: childEnv)
         vc.navigationItem.largeTitleDisplayMode = displayMode
         return vc
     }

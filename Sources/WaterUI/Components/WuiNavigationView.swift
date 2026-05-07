@@ -253,7 +253,16 @@ final class WuiNavigationView: PlatformView, WuiComponent {
         #if canImport(UIKit)
         let button = UIButton(type: .system)
         button.setImage(UIImage(systemName: "chevron.backward"), for: .normal)
-        button.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.92)
+        // Theme-driven chrome: read the `Surface` slot for the floating
+        // back button so it reads as an elevated chip on top of any page
+        // background (including dark mode in preview captures).
+        if let surfacePtr = waterui_theme_color(env.inner, WuiColorSlot_Surface) {
+            button.backgroundColor = WuiComputed<WuiResolvedColor>(surfacePtr).value
+                .toUIColor()
+                .withAlphaComponent(0.92)
+        } else {
+            button.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.92)
+        }
         button.layer.cornerRadius = 8
         button.addTarget(self, action: #selector(backButtonTapped), for: .touchUpInside)
         button.translatesAutoresizingMaskIntoConstraints = true

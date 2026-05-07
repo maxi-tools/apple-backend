@@ -91,6 +91,14 @@ final class WuiContainer: PlatformView, WuiComponent {
     private var measuredMainAxis: [Int32: CGFloat] = [:]
     private var measuredCrossAxis: [Int32: CGFloat] = [:]
     private var lastCrossConstraint: CGFloat = -1
+    /// When this container is parented under Auto Layout (e.g. inside a
+    /// `UITableViewCell`), `intrinsicContentSize` must report the height
+    /// produced by the *current* width so multi-line text wraps correctly.
+    /// We track the most recently laid-out width here and reuse it from
+    /// `intrinsicContentSize`; any time it changes during `layout`, we
+    /// invalidate so Auto Layout re-queries us. Mirror of the same pattern
+    /// in `WuiAnyView` (see `Core/AnyView.swift`).
+    private var lastAutoLayoutWidth: CGFloat = 0
 
     #if canImport(UIKit)
         private var scrollObservation: NSKeyValueObservation?
@@ -199,6 +207,16 @@ final class WuiContainer: PlatformView, WuiComponent {
             super.layoutSubviews()
             installScrollObservationIfNeeded()
             performLayout()
+            // When parented under Auto Layout (e.g. UITableViewCell) the host
+            // gives us a width via constraints. Re-measure the intrinsic
+            // height against that width so multi-line content can grow
+            // vertically.
+            if !translatesAutoresizingMaskIntoConstraints, bounds.width > 0,
+                bounds.width != lastAutoLayoutWidth
+            {
+                lastAutoLayoutWidth = bounds.width
+                invalidateIntrinsicContentSize()
+            }
         }
 
         override func sizeThatFits(_ size: CGSize) -> CGSize {
@@ -206,7 +224,13 @@ final class WuiContainer: PlatformView, WuiComponent {
         }
 
         override var intrinsicContentSize: CGSize {
-            sizeThatFits(WuiProposalSize())
+            var intrinsic = sizeThatFits(WuiProposalSize())
+            guard !translatesAutoresizingMaskIntoConstraints, bounds.width > 0 else {
+                return intrinsic
+            }
+            let constrained = sizeThatFits(WuiProposalSize(width: Float(bounds.width), height: nil))
+            intrinsic.height = constrained.height
+            return intrinsic
         }
 
         override func didMoveToSuperview() {
@@ -219,6 +243,12 @@ final class WuiContainer: PlatformView, WuiComponent {
             super.layout()
             installScrollObservationIfNeeded()
             performLayout()
+            if !translatesAutoresizingMaskIntoConstraints, bounds.width > 0,
+                bounds.width != lastAutoLayoutWidth
+            {
+                lastAutoLayoutWidth = bounds.width
+                invalidateIntrinsicContentSize()
+            }
         }
 
         override var fittingSize: NSSize {
@@ -226,7 +256,13 @@ final class WuiContainer: PlatformView, WuiComponent {
         }
 
         override var intrinsicContentSize: NSSize {
-            sizeThatFits(WuiProposalSize())
+            var intrinsic = sizeThatFits(WuiProposalSize())
+            guard !translatesAutoresizingMaskIntoConstraints, bounds.width > 0 else {
+                return intrinsic
+            }
+            let constrained = sizeThatFits(WuiProposalSize(width: Float(bounds.width), height: nil))
+            intrinsic.height = constrained.height
+            return intrinsic
         }
 
         override var isFlipped: Bool { true }
