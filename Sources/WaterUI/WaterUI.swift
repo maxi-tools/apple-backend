@@ -811,7 +811,11 @@ public final class WuiRootContext {
         mainWindow
     }
 
-    public init() {
+    /// - Parameter embedded: when true, skips installing the window manager so
+    ///   this context renders `rootView` for embedding inside a host-owned view
+    ///   (e.g. an NSStatusItem popover) WITHOUT spawning a top-level NSWindow.
+    ///   Used by maxi-tray's WaterUI migration. Defaults to false (unchanged).
+    public init(embedded: Bool = false) {
         // 1. Create environment (waterui_init) - only once per process
         // IMPORTANT: We use a raw pointer here because waterui_app() takes ownership.
         // We must NOT wrap it in WuiEnvironment until after waterui_app() returns,
@@ -827,7 +831,12 @@ public final class WuiRootContext {
             initEnvPtr = waterui_init()
             // Install services into the raw pointer (before ownership transfers)
             installWebViewController(env: initEnvPtr)
-            installWindowManager(env: initEnvPtr)
+            // When embedded in a host-owned view, skip the window manager so
+            // setting the main window state to Normal does NOT create a stray
+            // top-level NSWindow — we only want `rootView` for the host.
+            if !embedded {
+                installWindowManager(env: initEnvPtr)
+            }
             installViewRenderer(env: initEnvPtr)
             isFirstInit = true
         }
@@ -1029,6 +1038,15 @@ public final class WuiRootContext {
 
         public override init(frame frameRect: NSRect) {
             self.context = WuiRootContext()
+            super.init(frame: frameRect)
+            setupView()
+        }
+
+        /// Hosts WaterUI content WITHOUT spawning a top-level NSWindow, for
+        /// embedding inside a host-owned view (e.g. maxi-tray's NSStatusItem
+        /// popover). Pass `embedded: true`.
+        public init(frame frameRect: NSRect, embedded: Bool) {
+            self.context = WuiRootContext(embedded: embedded)
             super.init(frame: frameRect)
             setupView()
         }
