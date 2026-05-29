@@ -305,7 +305,7 @@ final class WuiSlider: PlatformView, WuiComponent {
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = 0.2
                     context.allowsImplicitAnimation = true
-                    slider.doubleValue = clamped
+                    self.slider.doubleValue = clamped
                 }
             } else {
                 slider.doubleValue = clamped

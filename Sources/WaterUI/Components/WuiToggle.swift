@@ -157,7 +157,7 @@ final class WuiToggle: PlatformView, WuiComponent {
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = 0.15
                     context.allowsImplicitAnimation = true
-                    toggle.state = newState
+                    self.toggle.state = newState
                 }
             } else {
                 toggle.state = newState
