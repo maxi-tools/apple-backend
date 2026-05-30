@@ -16,5 +16,6 @@ let package = Package(
     targets: [
         .target(name: "CWaterUI"),
         .target(name: "WaterUI", dependencies: ["CWaterUI"]),
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )
