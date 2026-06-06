@@ -3994,6 +3994,10 @@ struct WuiTypeId waterui_anyview_id(void);
  */
 struct WuiEnv *waterui_clone_env(const struct WuiEnv *env);
 
+struct WuiEnv *waterui_env_child_scope(const struct WuiEnv *env, uintptr_t index);
+
+struct WuiEnv *waterui_env_reset_scope(const struct WuiEnv *env);
+
 /**
  * Gets the body of a view given the environment
  *

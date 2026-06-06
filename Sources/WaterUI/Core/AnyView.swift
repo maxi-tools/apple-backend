@@ -554,8 +554,10 @@ private func registerBuiltinComponentsIfNeeded() {
                 return factory(sanitized, env)
             }
 
-            if let next = waterui_view_body(sanitized, env.inner) {
-                return resolve(anyview: next, env: env)
+            if let next = waterui_view_body(sanitized, env.resetScope().inner) {
+                // Reset the scope cursor for this body eval; treat the body output as
+                // child 0 so its own local state is stably keyed across rebuilds.
+                return resolve(anyview: next, env: env.childScope(0))
             }
 
             fatalError("Unsupported component type: \(viewId.toString())")
@@ -855,8 +857,10 @@ private func registerBuiltinComponentsIfNeeded() {
                 return factory(sanitized, env)
             }
 
-            if let next = waterui_view_body(sanitized, env.inner) {
-                return resolve(anyview: next, env: env)
+            if let next = waterui_view_body(sanitized, env.resetScope().inner) {
+                // Reset the scope cursor for this body eval; treat the body output as
+                // child 0 so its own local state is stably keyed across rebuilds.
+                return resolve(anyview: next, env: env.childScope(0))
             }
 
             fatalError("Unsupported component type: \(viewId.toString())")

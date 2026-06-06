@@ -40,7 +40,9 @@ final class WuiAnyViews {
     /// Returns a WuiAnyView which is already a UIView/NSView.
     func getView(at index: Int, env: WuiEnvironment) -> WuiAnyView {
         let ptr = waterui_anyviews_get_view(inner, UInt(index))
-        return WuiAnyView(anyview: ptr!, env: env)
+        // Per-child scope: distinct LocalStateScope path so sibling dynamics keep
+        // independent identity across rebuilds (fine-grained reactivity).
+        return WuiAnyView(anyview: ptr!, env: env.childScope(index))
     }
 }
 
