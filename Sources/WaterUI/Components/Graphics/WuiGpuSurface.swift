@@ -72,6 +72,9 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         double_tap: false
     )
 
+    // Pending keyboard events, flushed to Rust on the next render (key-down/up).
+    private var pendingKeyEvents: [WuiKeyEvent] = []
+
     private let lock = NSLock()
 
     init(ffiSurface: CWaterUI.WuiGpuSurface, envPtr: OpaquePointer) {
@@ -158,6 +161,15 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Queue keyboard events to be forwarded to the GPU renderer on the next frame.
+    func enqueueKeyEvents(_ events: [WuiKeyEvent]) {
+        guard !events.isEmpty else { return }
+        lock.lock()
+        needsRender = true
+        pendingKeyEvents.append(contentsOf: events)
+        lock.unlock()
+    }
+
     /// Send current pointer + gesture state to the GPU surface before rendering.
     private func syncInputState() {
         guard let state = gpuState else { return }
@@ -165,6 +177,17 @@ private final class WuiGpuSurfaceRenderState: @unchecked Sendable {
         waterui_gpu_surface_set_input(state, input)
         // Clear double_tap after sending (it's a one-frame signal)
         clearDoubleTap()
+
+        // Drain queued keyboard events and forward them to the GPU renderer.
+        lock.lock()
+        let keys = pendingKeyEvents
+        pendingKeyEvents.removeAll(keepingCapacity: true)
+        lock.unlock()
+        if !keys.isEmpty {
+            keys.withUnsafeBufferPointer { buffer in
+                waterui_gpu_surface_set_keys(state, buffer.baseAddress, UInt(buffer.count))
+            }
+        }
     }
 
     func updateSize(width: UInt32, height: UInt32) {
@@ -946,6 +969,92 @@ final class WuiGpuSurface: PlatformView, WuiComponent, WuiFirstPaintReadyPartici
                 renderState.triggerDoubleTap()
                 renderState.resetGestureState()
                 renderFrame()
+            }
+        }
+
+        // MARK: - Keyboard Input (macOS)
+
+        override func keyDown(with event: NSEvent) {
+            let events = makeKeyEvents(from: event, pressed: true)
+            guard !events.isEmpty else {
+                super.keyDown(with: event)
+                return
+            }
+            renderState.enqueueKeyEvents(events)
+            renderFrame()
+        }
+
+        override func keyUp(with event: NSEvent) {
+            let events = makeKeyEvents(from: event, pressed: false)
+            guard !events.isEmpty else {
+                super.keyUp(with: event)
+                return
+            }
+            renderState.enqueueKeyEvents(events)
+            renderFrame()
+        }
+
+        /// Build the FFI key events for an NSEvent key-down/key-up.
+        ///
+        /// Special keys (arrows, enter, tab, etc.) are emitted as named codes with
+        /// `codepoint == 0`; everything else is forwarded as typed Unicode scalars.
+        private func makeKeyEvents(from event: NSEvent, pressed: Bool) -> [WuiKeyEvent] {
+            let flags = event.modifierFlags
+            let modifiers = WuiKeyModifiers(
+                shift: flags.contains(.shift),
+                ctrl: flags.contains(.control),
+                alt: flags.contains(.option),
+                meta: flags.contains(.command)
+            )
+
+            // Classify using modifier-independent characters so Shift/Option don't
+            // hide special keys; forward typed text using the resolved characters.
+            let classifyScalars = (event.charactersIgnoringModifiers ?? "").unicodeScalars
+            var events: [WuiKeyEvent] = []
+
+            for scalar in classifyScalars {
+                if let named = Self.namedKeyCode(for: scalar) {
+                    events.append(
+                        WuiKeyEvent(codepoint: 0, named: named, modifiers: modifiers, pressed: pressed)
+                    )
+                }
+            }
+            if !events.isEmpty {
+                return events
+            }
+
+            let typedScalars = (event.characters ?? event.charactersIgnoringModifiers ?? "").unicodeScalars
+            for scalar in typedScalars {
+                // Skip the private-use function-key range (handled as named keys).
+                guard scalar.value < 0xF700 else { continue }
+                events.append(
+                    WuiKeyEvent(codepoint: scalar.value, named: 0, modifiers: modifiers, pressed: pressed)
+                )
+            }
+            return events
+        }
+
+        /// Map an AppKit special-key Unicode scalar to a `WuiKeyEvent.named` code.
+        /// Returns nil for ordinary typed characters.
+        private static func namedKeyCode(for scalar: Unicode.Scalar) -> UInt32? {
+            switch scalar.value {
+            case 0x0D, 0x03, 0x0A: return 0  // Enter (Return / keypad Enter / newline)
+            case 0x09: return 1  // Tab
+            case 0x7F, 0x08: return 2  // Backspace (delete-left)
+            case 0x1B: return 4  // Escape
+            case 0xF728: return 3  // Delete (forward delete)
+            case 0xF700: return 5  // ArrowUp
+            case 0xF701: return 6  // ArrowDown
+            case 0xF702: return 7  // ArrowLeft
+            case 0xF703: return 8  // ArrowRight
+            case 0xF729: return 9  // Home
+            case 0xF72B: return 10  // End
+            case 0xF72C: return 11  // PageUp
+            case 0xF72D: return 12  // PageDown
+            case 0xF727: return 13  // Insert
+            case 0xF704...0xF726:  // F1..F35 -> Function(n) encoded as 100 + n
+                return 100 + (scalar.value - 0xF704) + 1
+            default: return nil
             }
         }
     #endif
