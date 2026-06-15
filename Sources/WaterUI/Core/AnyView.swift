@@ -554,10 +554,20 @@ private func registerBuiltinComponentsIfNeeded() {
                 return factory(sanitized, env)
             }
 
-            if let next = waterui_view_body(sanitized, env.resetScope().inner) {
+            // Bind the scoped environment to a local and extend its lifetime across
+            // the FFI call. Passing `env.resetScope().inner` directly lets ARC
+            // release the temporary `WuiEnvironment` (running `deinit` ->
+            // `waterui_drop_env`) before/while `waterui_view_body` runs, freeing the
+            // Rust `Environment` mid-call — a use-after-free (EXC_BAD_ACCESS in
+            // `Environment::clone` during body eval).
+            let scopedEnv = env.resetScope()
+            let scopedBody = withExtendedLifetime(scopedEnv) {
+                waterui_view_body(sanitized, scopedEnv.inner)
+            }
+            if let scopedBody {
                 // Reset the scope cursor for this body eval; treat the body output as
                 // child 0 so its own local state is stably keyed across rebuilds.
-                return resolve(anyview: next, env: env.childScope(0))
+                return resolve(anyview: scopedBody, env: env.childScope(0))
             }
 
             fatalError("Unsupported component type: \(viewId.toString())")
@@ -857,10 +867,20 @@ private func registerBuiltinComponentsIfNeeded() {
                 return factory(sanitized, env)
             }
 
-            if let next = waterui_view_body(sanitized, env.resetScope().inner) {
+            // Bind the scoped environment to a local and extend its lifetime across
+            // the FFI call. Passing `env.resetScope().inner` directly lets ARC
+            // release the temporary `WuiEnvironment` (running `deinit` ->
+            // `waterui_drop_env`) before/while `waterui_view_body` runs, freeing the
+            // Rust `Environment` mid-call — a use-after-free (EXC_BAD_ACCESS in
+            // `Environment::clone` during body eval).
+            let scopedEnv = env.resetScope()
+            let scopedBody = withExtendedLifetime(scopedEnv) {
+                waterui_view_body(sanitized, scopedEnv.inner)
+            }
+            if let scopedBody {
                 // Reset the scope cursor for this body eval; treat the body output as
                 // child 0 so its own local state is stably keyed across rebuilds.
-                return resolve(anyview: next, env: env.childScope(0))
+                return resolve(anyview: scopedBody, env: env.childScope(0))
             }
 
             fatalError("Unsupported component type: \(viewId.toString())")
