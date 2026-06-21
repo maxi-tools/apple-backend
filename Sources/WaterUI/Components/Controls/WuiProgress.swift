@@ -31,11 +31,16 @@ final class WuiProgress: PlatformView, WuiComponent {
     #elseif canImport(AppKit)
     private let progressIndicator = NSProgressIndicator()
     #endif
+    private let circularTrackLayer = CAShapeLayer()
+    private let circularProgressLayer = CAShapeLayer()
     private var watcher: WatcherGuard?
+    private var foregroundWatcher: WatcherGuard?
+    private var foreground: WuiComputed<WuiResolvedColor>?
 
     private var labelView: WuiAnyView
     private var value: WuiComputed<Double>
     private var style: WuiProgressStyle
+    private var currentValue: Double = 0.0
 
     // Layout constants
     private let verticalSpacing: CGFloat = 6.0
@@ -47,18 +52,28 @@ final class WuiProgress: PlatformView, WuiComponent {
         let ffiProgress: CWaterUI.WuiProgress = waterui_force_as_progress(anyview)
         let labelView = WuiAnyView(anyview: ffiProgress.label, env: env)
         let value = WuiComputed<Double>(ffiProgress.value)
-        self.init(stretchAxis: stretchAxis, label: labelView, value: value, style: ffiProgress.style)
+        self.init(stretchAxis: stretchAxis, label: labelView, value: value, style: ffiProgress.style, env: env)
     }
 
     // MARK: - Designated Init
 
-    init(stretchAxis: WuiStretchAxis, label: WuiAnyView, value: WuiComputed<Double>, style: WuiProgressStyle) {
+    init(
+        stretchAxis: WuiStretchAxis,
+        label: WuiAnyView,
+        value: WuiComputed<Double>,
+        style: WuiProgressStyle,
+        env: WuiEnvironment? = nil
+    ) {
         self.stretchAxis = stretchAxis
         self.labelView = label
         self.value = value
         self.style = style
+        self.currentValue = value.value
         super.init(frame: .zero)
         configureSubviews()
+        if let env {
+            installForeground(env)
+        }
         updateLabel(label, force: true)
         updateStyle(style)
         updateValueSource(value, force: true)
@@ -74,24 +89,16 @@ final class WuiProgress: PlatformView, WuiComponent {
     func sizeThatFits(_ proposal: WuiProposalSize) -> CGSize {
         // Per LAYOUT_SPEC.md:
         // - Linear ProgressView: axis-expanding (width expands, height intrinsic)
-        // - Circular ProgressView: fixed size (platform-native spinner)
+        // - Circular ProgressView: fills the proposed square when available
 
         let isCircular = style == WuiProgressStyle_Circular
 
         if isCircular {
-            #if canImport(UIKit)
-            let spinnerSize = activityIndicator.intrinsicContentSize
-            return CGSize(
-                width: proposal.width.map { CGFloat($0) } ?? spinnerSize.width,
-                height: proposal.height.map { CGFloat($0) } ?? spinnerSize.height
-            )
-            #elseif canImport(AppKit)
-            let spinnerSize = CGSize(width: 20, height: 20)
-            return CGSize(
-                width: proposal.width.map { CGFloat($0) } ?? spinnerSize.width,
-                height: proposal.height.map { CGFloat($0) } ?? spinnerSize.height
-            )
-            #endif
+            let fallback: CGFloat = 20
+            let proposedWidth = proposal.width.map { CGFloat($0) }
+            let proposedHeight = proposal.height.map { CGFloat($0) }
+            let side = min(proposedWidth ?? proposedHeight ?? fallback, proposedHeight ?? proposedWidth ?? fallback)
+            return CGSize(width: side, height: side)
         }
 
         // Linear progress: axis-expanding on width per LAYOUT_SPEC.md
@@ -144,29 +151,39 @@ final class WuiProgress: PlatformView, WuiComponent {
         let isCircular = style == WuiProgressStyle_Circular
 
         if isCircular {
-            // Circular: center the spinner, hide label and linear progress
+            let side = min(boundsWidth, boundsHeight)
+            let ringFrame = CGRect(
+                x: (boundsWidth - side) / 2,
+                y: (boundsHeight - side) / 2,
+                width: side,
+                height: side
+            )
             #if canImport(UIKit)
             let spinnerSize = activityIndicator.intrinsicContentSize
             activityIndicator.frame = CGRect(
-                x: (boundsWidth - spinnerSize.width) / 2,
-                y: (boundsHeight - spinnerSize.height) / 2,
-                width: spinnerSize.width,
-                height: spinnerSize.height
+                x: currentValue.isInfinite ? (boundsWidth - spinnerSize.width) / 2 : ringFrame.minX,
+                y: currentValue.isInfinite ? (boundsHeight - spinnerSize.height) / 2 : ringFrame.minY,
+                width: currentValue.isInfinite ? spinnerSize.width : ringFrame.width,
+                height: currentValue.isInfinite ? spinnerSize.height : ringFrame.height
             )
             progressView.frame = .zero
             labelView.frame = .zero
             #elseif canImport(AppKit)
             let spinnerSize = CGSize(width: 20, height: 20)
             progressIndicator.frame = CGRect(
-                x: (boundsWidth - spinnerSize.width) / 2,
-                y: (boundsHeight - spinnerSize.height) / 2,
-                width: spinnerSize.width,
-                height: spinnerSize.height
+                x: currentValue.isInfinite ? (boundsWidth - spinnerSize.width) / 2 : 0,
+                y: currentValue.isInfinite ? (boundsHeight - spinnerSize.height) / 2 : 0,
+                width: currentValue.isInfinite ? spinnerSize.width : 0,
+                height: currentValue.isInfinite ? spinnerSize.height : 0
             )
             labelView.frame = .zero
             #endif
+            layoutCircularLayers(in: ringFrame)
             return
         }
+
+        circularTrackLayer.isHidden = true
+        circularProgressLayer.isHidden = true
 
         // Linear progress: label at top, progress bar below
         let labelSize = labelView.sizeThatFits(WuiProposalSize())
@@ -234,6 +251,7 @@ final class WuiProgress: PlatformView, WuiComponent {
     private func configureSubviews() {
         // Manual frame layout - just add subviews, performLayout() will position them
         addSubview(labelView)
+        configureCircularLayers()
 
         #if canImport(UIKit)
         activityIndicator.hidesWhenStopped = true
@@ -261,8 +279,100 @@ final class WuiProgress: PlatformView, WuiComponent {
         #endif
     }
 
+    private func installForeground(_ env: WuiEnvironment) {
+        guard let computedPtr = waterui_theme_color(env.inner, WuiColorSlot_Foreground) else { return }
+        let computed = WuiComputed<WuiResolvedColor>(computedPtr)
+        foreground = computed
+        foregroundWatcher = computed.watch { [weak self] color, _ in
+            self?.applyCircularColor(color)
+        }
+        applyCircularColor(computed.value)
+    }
+
+    private func configureCircularLayers() {
+        for layer in [circularTrackLayer, circularProgressLayer] {
+            layer.fillColor = nil
+            layer.lineCap = .round
+            layer.isHidden = true
+        }
+        circularTrackLayer.opacity = 0.18
+        circularProgressLayer.strokeEnd = 0.0
+
+        #if canImport(UIKit)
+        layer.addSublayer(circularTrackLayer)
+        layer.addSublayer(circularProgressLayer)
+        #elseif canImport(AppKit)
+        wantsLayer = true
+        layer?.addSublayer(circularTrackLayer)
+        layer?.addSublayer(circularProgressLayer)
+        #endif
+    }
+
+    private func layoutCircularLayers(in frame: CGRect) {
+        guard frame.width > 0, frame.height > 0 else { return }
+        let lineWidth = max(4.0, min(frame.width, frame.height) * 0.08)
+        let radius = max(0.0, (min(frame.width, frame.height) - lineWidth) / 2)
+        let path = CGMutablePath()
+        path.addArc(
+            center: CGPoint(x: frame.midX, y: frame.midY),
+            radius: radius,
+            startAngle: -CGFloat.pi / 2,
+            endAngle: CGFloat.pi * 3 / 2,
+            clockwise: false
+        )
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        circularTrackLayer.frame = bounds
+        circularProgressLayer.frame = bounds
+        circularTrackLayer.path = path
+        circularProgressLayer.path = path
+        circularTrackLayer.lineWidth = lineWidth
+        circularProgressLayer.lineWidth = lineWidth
+        CATransaction.commit()
+    }
+
+    private func applyCircularColor(_ color: WuiResolvedColor) {
+        #if canImport(UIKit)
+        let cgColor = color.toUIColor().cgColor
+        #elseif canImport(AppKit)
+        let cgColor = color.toNSColor().cgColor
+        #endif
+        circularTrackLayer.strokeColor = cgColor
+        circularProgressLayer.strokeColor = cgColor
+    }
+
+    private func setCircularProgress(_ value: Double) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        circularProgressLayer.strokeEnd = CGFloat(min(max(value, 0.0), 1.0))
+        CATransaction.commit()
+    }
+
     private func updateAppearance(for value: Double) {
-        let isIndeterminate = value.isInfinite || style == WuiProgressStyle_Circular
+        currentValue = value
+        let isCircular = style == WuiProgressStyle_Circular
+        let isIndeterminate = value.isInfinite
+
+        if isCircular && !isIndeterminate {
+            circularTrackLayer.isHidden = false
+            circularProgressLayer.isHidden = false
+            setCircularProgress(value)
+
+            #if canImport(UIKit)
+            activityIndicator.stopAnimating()
+            activityIndicator.isHidden = true
+            progressView.isHidden = true
+            #elseif canImport(AppKit)
+            progressIndicator.stopAnimation(nil)
+            progressIndicator.isHidden = true
+            #endif
+            setNeedsLayoutCompat()
+            return
+        }
+
+        circularTrackLayer.isHidden = true
+        circularProgressLayer.isHidden = true
 
         #if canImport(UIKit)
         if isIndeterminate {
@@ -278,10 +388,12 @@ final class WuiProgress: PlatformView, WuiComponent {
         }
         #elseif canImport(AppKit)
         if isIndeterminate {
+            progressIndicator.isHidden = false
             progressIndicator.style = .spinning
             progressIndicator.isIndeterminate = true
             progressIndicator.startAnimation(nil)
         } else {
+            progressIndicator.isHidden = false
             progressIndicator.stopAnimation(nil)
             progressIndicator.style = .bar
             progressIndicator.isIndeterminate = false
@@ -291,5 +403,6 @@ final class WuiProgress: PlatformView, WuiComponent {
             progressIndicator.doubleValue = clamped
         }
         #endif
+        setNeedsLayoutCompat()
     }
 }
