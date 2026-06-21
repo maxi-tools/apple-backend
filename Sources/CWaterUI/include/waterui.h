@@ -3196,6 +3196,58 @@ typedef struct WuiGpuSurfaceInput {
 } WuiGpuSurfaceInput;
 
 /**
+ * FFI-safe keyboard modifier state.
+ *
+ * Mirrors the active modifier keys at the time a key event was produced.
+ */
+typedef struct WuiKeyModifiers {
+  /**
+   * Whether the Shift key is held.
+   */
+  bool shift;
+  /**
+   * Whether the Control key is held.
+   */
+  bool ctrl;
+  /**
+   * Whether the Alt/Option key is held.
+   */
+  bool alt;
+  /**
+   * Whether the Meta/Command key is held.
+   */
+  bool meta;
+} WuiKeyModifiers;
+
+/**
+ * FFI-safe keyboard event for a GpuSurface.
+ *
+ * `codepoint` non-zero is a typed character (its Unicode scalar value).
+ * `codepoint == 0` means a named key selected by `named`:
+ * 0=Enter, 1=Tab, 2=Backspace, 3=Delete, 4=Escape, 5=ArrowUp, 6=ArrowDown,
+ * 7=ArrowLeft, 8=ArrowRight, 9=Home, 10=End, 11=PageUp, 12=PageDown,
+ * 13=Insert, and `named >= 100` means Function(named - 100).
+ */
+typedef struct WuiKeyEvent {
+  /**
+   * Unicode scalar value of a typed character, or 0 for a named key.
+   */
+  uint32_t codepoint;
+  /**
+   * Named-key selector, used only when `codepoint == 0`.
+   */
+  uint32_t named;
+  /**
+   * Active modifier keys for this event.
+   */
+  struct WuiKeyModifiers modifiers;
+  /**
+   * Whether this is a key-down (true) or key-up (false) event.
+   */
+  bool pressed;
+} WuiKeyEvent;
+
+/**
  * FFI representation of a WebView event.
  */
 typedef struct WuiWebViewEvent {
@@ -5456,6 +5508,27 @@ void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
  */
 void waterui_gpu_surface_set_input(struct WuiGpuSurfaceState *state,
                                    struct WuiGpuSurfaceInput input);
+
+/**
+ * Forward a batch of keyboard events to a GpuSurface.
+ *
+ * Native backends call this when key-down/key-up events occur while the
+ * surface is focused. Events are delivered to the GPU renderer in order.
+ *
+ * # Arguments
+ *
+ * * `state` - Pointer to the initialized state from `waterui_gpu_surface_init`
+ * * `events` - Pointer to `len` `WuiKeyEvent` values (may be null when `len == 0`)
+ * * `len` - Number of events pointed to by `events`
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_gpu_surface_init`, and
+ * `events` must point to at least `len` initialized `WuiKeyEvent` values.
+ */
+void waterui_gpu_surface_set_keys(struct WuiGpuSurfaceState *state,
+                                  const struct WuiKeyEvent *events,
+                                  uintptr_t len);
 
 struct WuiSystemIcon waterui_force_as_system_icon(struct WuiAnyView *view);
 
