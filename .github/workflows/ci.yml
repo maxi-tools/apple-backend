@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     name: Build Apple backend
-    runs-on: macos-26
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - name: Checkout apple-backend repository
         uses: actions/checkout@v4
@@ -39,7 +39,7 @@ jobs:
   e2e-test:
     name: End-to-end Test
     needs: build
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - name: Checkout apple-backend repository
         uses: actions/checkout@v4
@@ -70,7 +70,7 @@ jobs:
 
   notify-waterui:
     name: Notify waterui repo
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64]
     needs: e2e-test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
