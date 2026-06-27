@@ -71,21 +71,45 @@ final class WuiDynamic: PlatformView, WuiComponent {
     }
 
     private func updateChild(with anyView: WuiAnyView) {
+        // Distinguish an event-driven structural change from a frame-time
+        // animation update. Reactive signals can emit every frame (game-UI
+        // style animations); doing a whole-tree `invalidateLayoutHierarchy` +
+        // synchronous layout on each one pins the CPU. If the new content has
+        // the same intrinsic size as the old, the surrounding layout is
+        // unchanged — we only need to reposition + redraw this view, NOT
+        // re-run the whole layout tree. Only when the size actually changes do
+        // we propagate layout up the hierarchy (the event path).
+        let intrinsic = WuiProposalSize()
+        let oldSize = currentChild?.sizeThatFits(intrinsic)
+
         currentChild?.removeFromSuperview()
 
         anyView.translatesAutoresizingMaskIntoConstraints = true
         addSubview(anyView)
         currentChild = anyView
 
-        // Invalidate layout up the entire view hierarchy
-        invalidateLayoutHierarchy()
+        let newSize = anyView.sizeThatFits(intrinsic)
 
-        // Force synchronous layout pass to ensure content updates immediately
-        #if canImport(UIKit)
-        layoutIfNeeded()
-        #elseif canImport(AppKit)
-        layoutSubtreeIfNeeded()
-        #endif
+        if oldSize == nil || oldSize! != newSize {
+            // Event-driven: intrinsic size changed, so ancestors must re-layout.
+            invalidateLayoutHierarchy()
+            #if canImport(UIKit)
+            layoutIfNeeded()
+            #elseif canImport(AppKit)
+            layoutSubtreeIfNeeded()
+            #endif
+        } else {
+            // Frame-time animation within fixed bounds: position the new child
+            // in our existing bounds and redraw only — skip the whole-tree
+            // layout pass. The child still lays itself out and repaints on the
+            // next run-loop pass.
+            anyView.frame = bounds
+            #if canImport(UIKit)
+            setNeedsDisplay()
+            #elseif canImport(AppKit)
+            needsDisplay = true
+            #endif
+        }
     }
 
     #if canImport(UIKit)
