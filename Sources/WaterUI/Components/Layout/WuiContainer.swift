@@ -82,6 +82,12 @@ final class WuiContainer: PlatformView, WuiComponent {
     private var contentsWatcher: WatcherGuard?
     private var childViews: [WuiAnyView] = []
     private var cachedSubViews: CachedSubViewArray?
+    /// Per-view measurement memoization keyed by proposal (non-lazy path).
+    /// A container's measured size is a pure function of (proposal, children);
+    /// caching avoids re-recursing the subtree on every probe, which is
+    /// otherwise exponential on deep trees and hangs the layout pass.
+    /// Invalidated everywhere `cachedSubViews` is reset.
+    private var measureCache: [WuiProposalKey: WuiViewDimensions] = [:]
     private let bridge = NativeLayoutBridge()
     private let env: WuiEnvironment
     private let lazyStack: LazyStackConfig?
@@ -168,6 +174,7 @@ final class WuiContainer: PlatformView, WuiComponent {
         }
         renderedChildren = renderedChildren.filter { seenIds.contains($0.key) }
         cachedSubViews = nil
+        measureCache.removeAll()
         invalidateVirtualLayout()
     }
 
@@ -195,11 +202,17 @@ final class WuiContainer: PlatformView, WuiComponent {
         if let lazyStack {
             return WuiViewDimensions(size: lazyStackSizeThatFits(proposal, config: lazyStack))
         }
-        return bridge.containerMeasure(
+        let key = WuiProposalKey(proposal)
+        if let cached = measureCache[key] {
+            return cached
+        }
+        let result = bridge.containerMeasure(
             layout: wuiLayout,
             parentProposal: proposal,
             children: subViewCache()
         )
+        measureCache[key] = result
+        return result
     }
 
     #if canImport(UIKit)
@@ -542,6 +555,7 @@ final class WuiContainer: PlatformView, WuiComponent {
 
     private func invalidateVirtualLayout() {
         cachedSubViews = nil
+        measureCache.removeAll()
         invalidateIntrinsicContentSize()
         #if canImport(UIKit)
             setNeedsLayout()
@@ -558,6 +572,7 @@ final class WuiContainer: PlatformView, WuiComponent {
 
         childViews = newChildren
         cachedSubViews = nil
+        measureCache.removeAll()
         for child in newChildren {
             child.translatesAutoresizingMaskIntoConstraints = true
             addSubview(child)

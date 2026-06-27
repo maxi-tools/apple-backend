@@ -29,6 +29,22 @@ private func waterui_layout_lazy_stack_vertical_alignment_shim(
 
 // MARK: - Proposal and Layout Types
 
+/// Hashable key for memoizing measurement results by proposal.
+///
+/// A view's measured dimensions are a pure function of `(proposal, content)`,
+/// so caching by proposal on the stable view object lets each subtree be
+/// measured once per distinct proposal instead of re-recursing on every probe.
+/// Without this, nested-container measurement is exponential on deep view trees
+/// and pins the main thread before the run loop starts (the tray never renders).
+struct WuiProposalKey: Hashable {
+    let width: Float?
+    let height: Float?
+    init(_ proposal: WuiProposalSize) {
+        self.width = proposal.width
+        self.height = proposal.height
+    }
+}
+
 public struct WuiProposalSize {
     public var width: Float?
     public var height: Float?

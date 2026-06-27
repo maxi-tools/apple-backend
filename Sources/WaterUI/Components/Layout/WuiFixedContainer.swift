@@ -33,6 +33,12 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
     private var wuiLayout: WuiLayout
     private var childViews: [WuiAnyView]
     private var cachedSubViews: CachedSubViewArray?
+    /// Per-view measurement memoization keyed by proposal. A container's
+    /// measured size is a pure function of (proposal, children), so caching here
+    /// lets each subtree be measured once per distinct proposal instead of
+    /// re-recursing on every probe. Without it, nested-container measurement is
+    /// exponential and hangs the layout pass. Invalidated in `setChildren`.
+    private var measureCache: [WuiProposalKey: WuiViewDimensions] = [:]
     private let bridge = NativeLayoutBridge()
 
     // MARK: - WuiComponent Init
@@ -70,11 +76,17 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
     }
 
     func measure(_ proposal: WuiProposalSize) -> WuiViewDimensions {
-        return bridge.containerMeasure(
+        let key = WuiProposalKey(proposal)
+        if let cached = measureCache[key] {
+            return cached
+        }
+        let result = bridge.containerMeasure(
             layout: wuiLayout,
             parentProposal: proposal,
             children: subViewCache()
         )
+        measureCache[key] = result
+        return result
     }
 
     // MARK: - Layout
@@ -159,6 +171,7 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
 
         childViews = newChildren
         cachedSubViews = nil
+        measureCache.removeAll()
         for child in newChildren {
             child.translatesAutoresizingMaskIntoConstraints = true
             addSubview(child)
