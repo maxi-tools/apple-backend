@@ -18,6 +18,12 @@ final class WuiClipShape: PlatformView, WuiComponent {
     private let contentView: any WuiComponent
     private var pathCommands: [WuiPathCommand] = []
     private var maskLayer: CAShapeLayer?
+    /// Absolute corner radius in points for a uniform rounded rectangle.
+    /// When `> 0`, we render a true circular/continuous corner natively via
+    /// `layer.cornerRadius` instead of the normalized mask path (which scales
+    /// the radius by width and height independently, producing elliptical
+    /// corners on non-square views). `0` keeps the legacy path-mask behaviour.
+    private let cornerRadiusPx: CGFloat
 
     var stretchAxis: WuiStretchAxis {
         contentView.stretchAxis
@@ -34,6 +40,8 @@ final class WuiClipShape: PlatformView, WuiComponent {
         if let head = commandsSlice.head {
             self.pathCommands = Array(UnsafeBufferPointer(start: head, count: Int(commandsSlice.len)))
         }
+
+        self.cornerRadiusPx = CGFloat(metadata.value.corner_radius_px)
 
         super.init(frame: .zero)
 
@@ -79,6 +87,34 @@ final class WuiClipShape: PlatformView, WuiComponent {
 
     private func updateMask() {
         guard !bounds.isEmpty else { return }
+
+        // Native continuous corner: a true circular corner of an absolute point
+        // radius, with no aspect distortion. Clamp to half the shorter side so a
+        // large radius degrades to a capsule rather than overflowing.
+        if cornerRadiusPx > 0 {
+            let maxRadius = min(bounds.width, bounds.height) / 2.0
+            let radius = min(cornerRadiusPx, maxRadius)
+            #if canImport(UIKit)
+            if maskLayer != nil {
+                (layer as CALayer).mask = nil
+                maskLayer = nil
+            }
+            layer.cornerRadius = radius
+            if #available(iOS 13.0, tvOS 13.0, *) {
+                layer.cornerCurve = .continuous
+            }
+            #elseif canImport(AppKit)
+            if maskLayer != nil {
+                (layer as CALayer?)?.mask = nil
+                maskLayer = nil
+            }
+            layer?.cornerRadius = radius
+            if #available(macOS 10.15, *) {
+                layer?.cornerCurve = .continuous
+            }
+            #endif
+            return
+        }
 
         let path = buildPath(in: bounds)
 

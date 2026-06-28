@@ -1776,6 +1776,13 @@ typedef struct WuiClipShape {
    * Array of path commands defining the shape.
    */
   struct WuiArray_WuiPathCommand commands;
+  /**
+   * Absolute corner radius in points for a uniform rounded rectangle.
+   * 0.0 means "clip to `commands`" (legacy normalized-path behaviour);
+   * > 0.0 tells capable backends to render a native circular/continuous
+   * corner of this many points instead of the aspect-distorting path.
+   */
+  float corner_radius_px;
 } WuiClipShape;
 
 typedef struct WuiMetadata_WuiClipShape {
