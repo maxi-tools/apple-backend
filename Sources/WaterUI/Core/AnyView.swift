@@ -133,6 +133,25 @@ private var metadataComponentIds: Set<WuiViewId> = []
 @MainActor
 private var builtinComponentsRegistered = false
 
+/// Weak holder so the dynamic identity cache never extends a `WuiDynamic`'s
+/// lifetime — entries auto-clear when the native view is deallocated.
+@MainActor
+private final class DynamicWeakBox {
+    weak var value: WuiDynamic?
+    init(_ value: WuiDynamic) { self.value = value }
+}
+
+/// Maps a persistent Rust `Dynamic`'s stable identity (`Rc::as_ptr`) to its live
+/// native view. A nested `Dynamic`'s `body` re-expands across the measure + mount
+/// realization passes; on the 2nd pass the outer's `handle.set` fires and rebuilds
+/// the child tree, re-resolving the SAME persistent inner `Dynamic`. Creating a
+/// second `WuiDynamic` would call `waterui_dynamic_connect` again and trip
+/// `unreachable!(\"Dynamic already connected\")`. Reusing the cached live view keeps
+/// the connect-once invariant; content stays current because the single connected
+/// receiver is driven by `handle.set`.
+@MainActor
+private var dynamicViewCache: [UInt: DynamicWeakBox] = [:]
+
 /// Register a component type that conforms to WuiComponent.
 @MainActor
 private func registerComponent<T: WuiComponent>(_ type: T.Type) {
@@ -545,6 +564,21 @@ private func registerBuiltinComponentsIfNeeded() {
 
             let viewId = WuiViewId(waterui_view_id(sanitized))
 
+            // P1 connect-once: a persistent Dynamic is realized on BOTH the
+            // measure and mount passes (a nested Dynamic re-expands its body on
+            // the 2nd pass). Reuse its live native view, keyed by the Rust
+            // handler stable identity, so waterui_dynamic_connect runs exactly
+            // once instead of tripping the already-connected unreachable panic.
+            if viewId == WuiDynamic.viewId, let dynPtr = waterui_force_as_dynamic(sanitized) {
+                let id = UInt(waterui_dynamic_identity(dynPtr))
+                if let existing = dynamicViewCache[id]?.value {
+                    return existing
+                }
+                let view = WuiDynamic(dynamic: dynPtr, env: env)
+                dynamicViewCache[id] = DynamicWeakBox(view)
+                return view
+            }
+
             // Look up registered component factory - O(1) pointer-based lookup
             if let factory = componentRegistry[viewId] {
                 // If this is the first non-metadata component, capture its env for root theme
@@ -857,6 +891,21 @@ private func registerBuiltinComponentsIfNeeded() {
             }
 
             let viewId = WuiViewId(waterui_view_id(sanitized))
+
+            // P1 connect-once: a persistent Dynamic is realized on BOTH the
+            // measure and mount passes (a nested Dynamic re-expands its body on
+            // the 2nd pass). Reuse its live native view, keyed by the Rust
+            // handler stable identity, so waterui_dynamic_connect runs exactly
+            // once instead of tripping the already-connected unreachable panic.
+            if viewId == WuiDynamic.viewId, let dynPtr = waterui_force_as_dynamic(sanitized) {
+                let id = UInt(waterui_dynamic_identity(dynPtr))
+                if let existing = dynamicViewCache[id]?.value {
+                    return existing
+                }
+                let view = WuiDynamic(dynamic: dynPtr, env: env)
+                dynamicViewCache[id] = DynamicWeakBox(view)
+                return view
+            }
 
             // Look up registered component factory - O(1) pointer-based lookup
             if let factory = componentRegistry[viewId] {

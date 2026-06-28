@@ -5236,6 +5236,15 @@ struct WuiTypeId waterui_dynamic_id(void);
  */
 void waterui_dynamic_connect(struct WuiDynamic *dynamic, struct WuiWatcher_AnyView *watcher);
 
+/**
+ * Returns a stable identity for a dynamic node (the Rc::as_ptr of its shared
+ * handler), used by native backends to connect each persistent Dynamic exactly
+ * once across the measurement + mount realization passes.
+ * # Safety
+ * The dynamic pointer must be valid; it is borrowed, not consumed.
+ */
+uintptr_t waterui_dynamic_identity(struct WuiDynamic *dynamic);
+
 struct WuiListItem waterui_force_as_list_item(struct WuiAnyView *view);
 
 struct WuiTypeId waterui_list_item_id(void);
