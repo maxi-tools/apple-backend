@@ -48,8 +48,15 @@ final class WuiFixedContainer: PlatformView, WuiComponent {
         let container: CWaterUI.WuiFixedContainer = waterui_force_as_fixed_container(anyview)
         let layout = WuiLayout(inner: container.layout!)
         let pointerArray = WuiArray<OpaquePointer>(container.contents)
-        let childViews = pointerArray.toArray().map {
-            WuiAnyView(anyview: $0, env: env)
+        // Per-child LocalStateScope (mirrors the lazy WuiContainer.getView path):
+        // give the i-th child a distinct scope path so sibling Dynamic/watch nodes
+        // keep independent identity. Without this every sibling shares one scope,
+        // their persistent Dynamics collapse to a single identity, the identity
+        // cache returns ONE shared WuiDynamic, and addSubview re-parents it to the
+        // last position — so only the last sibling renders (the P4 "only the omni
+        // bar draws" regression).
+        let childViews = pointerArray.toArray().enumerated().map { index, ptr in
+            WuiAnyView(anyview: ptr, env: env.childScope(index))
         }
         self.init(stretchAxis: stretchAxis, layout: layout, children: childViews)
     }
